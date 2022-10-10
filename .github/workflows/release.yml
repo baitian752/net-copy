@@ -1,0 +1,162 @@
+name: "Release"
+
+on:
+  push:
+    tags:
+      - "*"
+
+env:
+  bin_name: ncp
+
+jobs:
+  build-binaries:
+    name: Build binaries
+    runs-on: ${{ matrix.info.os }}
+    container: ${{ matrix.info.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        info:
+          # ======= Supported targets =======
+          # Linux (x64, x86, aarch64)
+          - {
+              os: ubuntu-latest,
+              target: x86_64-unknown-linux-gnu,
+              cross: false,
+            }
+          - { os: ubuntu-latest, target: i686-unknown-linux-gnu, cross: true }
+          - {
+              os: ubuntu-latest,
+              target: x86_64-unknown-linux-musl,
+              cross: false,
+            }
+          - { os: ubuntu-latest, target: i686-unknown-linux-musl, cross: true }
+          - {
+              os: ubuntu-latest,
+              target: aarch64-unknown-linux-gnu,
+              cross: true,
+            }
+          - {
+              os: ubuntu-latest,
+              target: aarch64-unknown-linux-musl,
+              cross: true,
+            }
+
+          # macOS (x64)
+          - { os: macOS-latest, target: x86_64-apple-darwin, cross: false }
+
+          # Windows (x64, x86)
+          - {
+              os: windows-latest,
+              target: x86_64-pc-windows-msvc,
+              cross: false,
+              bin_suffix: .exe,
+            }
+          - {
+              os: windows-latest,
+              target: i686-pc-windows-msvc,
+              cross: false,
+              bin_suffix: .exe,
+            }
+          - {
+              os: windows-latest,
+              target: x86_64-pc-windows-gnu,
+              cross: false,
+              bin_suffix: .exe,
+            }
+
+          # ======= Unsupported targets =======
+          # armv7
+          - {
+              os: ubuntu-latest,
+              target: armv7-unknown-linux-gnueabihf,
+              cross: true,
+            }
+          - {
+              os: ubuntu-latest,
+              target: armv7-unknown-linux-musleabihf,
+              cross: true,
+            }
+
+          # PowerPC 64 LE
+          - {
+              os: ubuntu-latest,
+              target: powerpc64le-unknown-linux-gnu,
+              cross: true,
+            }
+
+          # Risc-V 64gc
+          - {
+              os: ubuntu-latest,
+              target: riscv64gc-unknown-linux-gnu,
+              cross: true,
+            }
+
+          # macOS ARM
+          - { os: macOS-latest, target: aarch64-apple-darwin, cross: true }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Set up Rust toolchain
+        # if: matrix.info.container == ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: ${{ matrix.info.target }}
+
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.info.target }}
+
+      - name: Build
+        uses: ClementTsang/cargo-action@v0.0.2
+        with:
+          command: build
+          args: --release --verbose --locked --target=${{ matrix.info.target }}
+          use-cross: ${{ matrix.info.cross }}
+          cross-version: 0.2.4
+
+      - name: Bundle release
+        shell: bash
+        run: |
+          cp target/${{ matrix.info.target }}/release/${{ env.bin_name }}${{ matrix.info.bin_suffix }} ${{ env.bin_name }}_${{ matrix.info.target }}${{ matrix.info.bin_suffix }}
+          echo "ASSET=${{ env.bin_name }}_${{ matrix.info.target }}${{ matrix.info.bin_suffix }}" >> $GITHUB_ENV
+
+      - name: Create release directory for artifact, move file
+        shell: bash
+        run: |
+          mkdir release
+          mv ${{ env.ASSET }} release/
+      - name: Save release as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          retention-days: 3
+          name: release
+          path: release
+
+  upload-release:
+    name: upload-release
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    steps:
+      - name: Get release artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release
+          path: release
+
+      - name: Print out all release files
+        run: |
+          echo "Generated $(ls ./release | wc -l) files:"
+          du -h -d 0 ./release/*
+      - name: Upload all saved release files if not mock
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            release/*
