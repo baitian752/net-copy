@@ -58,7 +58,17 @@ struct Config {
 
 impl Config {
   fn from_file() -> Self {
-    let mut config_file_path = PathBuf::from_str("/etc/ncp.toml").unwrap();
+    let mut config_file_path = if env::consts::OS == "windows" {
+      if let Ok(p) = env::var("APPDATA") {
+        PathBuf::from_str(&p)
+      } else {
+        PathBuf::from_str("C:")
+      }
+      .unwrap()
+      .join("ncp.toml")
+    } else {
+      PathBuf::from_str("/etc/ncp.toml").unwrap()
+    };
     if let Some(home_path) = home::home_dir() {
       let user_config_file_path = home_path.join(".config").join("ncp.toml");
       if user_config_file_path.is_file() {

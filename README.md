@@ -28,6 +28,12 @@ Options:
   -V, --version        Print version information
 ```
 
+The options will first parse from command line, then from environment variables (env), finally from config file.
+
+The env name is `NCP_<UPPER CASE OF OPTION>`, e.g. `NCP_KEY`.
+
+The config file path may be `~/.config/ncp.toml` or `/etc/ncp.toml` (Unix-like), `%APPDATA%\ncp.toml` (Windows), the first has higher priority.
+
 ## Send
 
 ### One file
