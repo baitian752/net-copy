@@ -9,10 +9,14 @@ use std::{
   thread,
 };
 
+use bufstream::BufStream;
 use clap::ValueEnum;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use serde_derive::{Deserialize, Serialize};
 use tar::Builder;
+
+mod proxy;
+use crate::proxy::Proxy;
 
 #[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 pub enum Mode {
@@ -24,39 +28,44 @@ pub struct NetCopy {
   mode: Mode,
   key: String,
   file_paths: Vec<PathBuf>,
-  listener: TcpListener,
+  socket: SocketAddr,
   upload_html: &'static [u8],
   reserve: bool,
+  proxy: Option<SocketAddr>,
 }
 
 impl NetCopy {
   pub fn new(
     mode: Mode, file_paths: Vec<PathBuf>, key: &str, socket: SocketAddr, upload_html: &'static [u8], reserve: bool,
+    proxy: Option<SocketAddr>,
   ) -> Self {
     NetCopy {
       mode,
       key: key.into(),
       file_paths,
-      listener: TcpListener::bind(&socket).unwrap_or_else(|e| panic!("Bind TCP socket to {} failed: {:?}", socket, e)),
+      socket,
       upload_html,
       reserve,
+      proxy,
     }
   }
 
-  pub fn run(&self) {
+  pub fn run(&mut self) {
     match self.mode {
       Mode::Normal => {
+        let listener = TcpListener::bind(&self.socket)
+          .unwrap_or_else(|e| panic!("Bind TCP socket to {} failed: {:?}", self.socket, e));
         if self.file_paths.is_empty() {
-          self.recv()
+          self.recv(listener);
         } else {
-          self.send()
+          self.send(listener);
         }
       }
       Mode::Proxy => {
         if !self.file_paths.is_empty() {
           println!("WARNING: The proxy mode has activated, files will be ignored");
         }
-        self.proxy();
+        Proxy::new(self.socket.ip()).run();
       }
     }
   }
@@ -92,7 +101,7 @@ impl NetCopy {
     tar.finish().expect("Write tar file failed");
   }
 
-  fn send(&self) {
+  fn send(&self, listener: TcpListener) {
     let (file_path, is_archive) = if self.file_paths.len() == 1 && self.file_paths[0].is_file() {
       (self.file_paths[0].clone(), false)
     } else {
@@ -101,7 +110,6 @@ impl NetCopy {
       (tar_path, true)
     };
     let file_name = file_path.file_name().unwrap().to_str().unwrap();
-    let socket = self.listener.local_addr().unwrap();
     let tar_path = file_path.clone();
     ctrlc::set_handler(move || {
       if is_archive && tar_path.is_file() {
@@ -111,43 +119,61 @@ impl NetCopy {
     })
     .expect("Set Ctrl-C handler failed");
     println!();
-    if is_archive {
-      println!("cURL: curl http://{}/{} | tar xvf -", socket, self.key);
-      println!("Wget: wget -O- http://{}/{} | tar xvf -", socket, self.key);
-      println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", socket, self.key);
+    if let Some(proxy) = self.proxy {
+      if is_archive {
+        println!("cURL: curl http://{}/{} | tar xvf -", proxy, self.key);
+        println!("Wget: wget -O- http://{}/{} | tar xvf -", proxy, self.key);
+        println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", proxy, self.key);
+      } else {
+        println!("cURL: curl -o {} http://{}/{}", file_name, proxy, self.key);
+        println!("Wget: wget -O {} http://{}/{}", file_name, proxy, self.key);
+        println!("PowerShell: iwr -O {} http://{}/{}", file_name, proxy, self.key);
+      }
+      println!("Browser: http://{}/{}", proxy, self.key);
     } else {
-      println!("cURL: curl -o {} http://{}/{}", file_name, socket, self.key);
-      println!("Wget: wget -O {} http://{}/{}", file_name, socket, self.key);
-      println!("PowerShell: iwr -O {} http://{}/{}", file_name, socket, self.key);
+      if is_archive {
+        println!("cURL: curl http://{}/{} | tar xvf -", self.socket, self.key);
+        println!("Wget: wget -O- http://{}/{} | tar xvf -", self.socket, self.key);
+        println!(
+          "PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'",
+          self.socket, self.key
+        );
+      } else {
+        println!("cURL: curl -o {} http://{}/{}", file_name, self.socket, self.key);
+        println!("Wget: wget -O {} http://{}/{}", file_name, self.socket, self.key);
+        println!("PowerShell: iwr -O {} http://{}/{}", file_name, self.socket, self.key);
+      }
+      println!("Browser: http://{}/{}", self.socket, self.key);
     }
-    println!("Browser: http://{}/{}", socket, self.key);
-    println!();
-    for stream in self.listener.incoming() {
+
+    for stream in listener.incoming() {
       let file_name = file_name.to_string();
       let key = self.key.clone();
       match stream {
-        Ok(mut stream) => {
+        Ok(stream) => {
           let file_path = file_path.clone();
           if !file_path.is_file() && is_archive {
             self.archive(&file_path);
           }
           thread::spawn(move || {
             let peer_addr = stream.peer_addr().expect("Get peer socket failed");
-            let mut buf_reader = BufReader::new(&mut stream);
+            let mut buf_stream = BufStream::new(stream);
             let mut request_line = String::new();
-            buf_reader
+            buf_stream
               .read_line(&mut request_line)
               .expect("Read line from buffer failed");
             if request_line.trim() != format!("GET /{} HTTP/1.1", key) {
-              stream
+              buf_stream
                 .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 .expect("Write response header failed");
+              buf_stream.flush().expect("Flush stream failed");
               println!("Bad Request (from {}): {}", peer_addr, request_line.trim());
               return;
             }
             println!("\nSending {:?} to {}", file_path, peer_addr);
-            let mut f = File::open(&file_path).expect("Open sending file failed");
-            let file_size = f.metadata().expect("Get file size metadata failed").len();
+            let file = File::open(&file_path).expect("Open sending file failed");
+            let mut file_reader = BufReader::new(&file);
+            let file_size = file.metadata().expect("Get file size metadata failed").len();
 
             let response = format!(
               "HTTP/1.1 200 OK\r\n\
@@ -156,22 +182,25 @@ impl NetCopy {
               Content-Disposition: attachment; filename=\"{file_name}\"\r\n\
               \r\n"
             );
-            stream
+            buf_stream
               .write_all(response.as_bytes())
               .expect("Write response header failed");
+            buf_stream.flush().expect("Flush stream failed");
 
-            const CHUNK_SIZE: u64 = 8 * 1024;
-            let mut buf = vec![0u8; CHUNK_SIZE as usize];
-            for _ in 0..(file_size / CHUNK_SIZE) {
-              f.read_exact(&mut buf).expect("Read sending file failed");
-              stream.write_all(&buf).expect("Write response content failed");
+            let mut buf = vec![0u8; 16 * 1024];
+            let mut left_size = file_size;
+            while left_size > 0 {
+              match file_reader.read(&mut buf) {
+                Ok(n) => {
+                  buf_stream.write_all(&buf[0..n]).expect("Write response content failed");
+                  left_size -= n as u64;
+                }
+                Err(_) => panic!("Read sending file failed"),
+              }
             }
-            let left_size = file_size % CHUNK_SIZE;
-            if left_size != 0 {
-              buf.resize(left_size as usize, 0u8);
-              f.read_exact(&mut buf).expect("Read sending file failed");
-              stream.write_all(&buf).expect("Write response content failed");
-            }
+            buf_stream.flush().expect("Flush stream failed");
+            let mut buf = vec![];
+            buf_stream.read_to_end(&mut buf).unwrap();
             println!("Send {:?} to {} done", file_path, peer_addr);
           });
         }
@@ -180,61 +209,86 @@ impl NetCopy {
     }
   }
 
-  fn recv(&self) {
-    let socket = self.listener.local_addr().unwrap();
+  fn recv(&self, listener: TcpListener) {
+    let socket = listener.local_addr().unwrap();
     println!();
-    println!(
-      "cURL (Bash): for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
-      socket, self.key
-    );
-    println!(
-      "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\" -T $f http://{}/{} }}",
-      socket, self.key
-    );
-    println!(
-      "cURL (CMD): FOR %f IN (f1, f2) DO curl -X POST -H \"File-Path: %f\" -T %f http://{}/{}",
-      socket, self.key
-    );
-    println!("Browser: http://{}/{}", socket, self.key);
-    println!();
+    if let Some(proxy) = self.proxy {
+      println!(
+        "cURL (Bash): for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
+        proxy, self.key
+      );
+      println!(
+        "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\"  -T $f http://{}/{} }}",
+        proxy, self.key
+      );
+      println!(
+        "cURL (CMD): FOR %f IN (f1, f2) DO curl -X POST -H \"File-Path: %f\" -T %f http://{}/{}",
+        proxy, self.key
+      );
+      println!("Browser: http://{}/{}", proxy, self.key);
+    } else {
+      println!(
+        "cURL (Bash): for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
+        socket, self.key
+      );
+      println!(
+        "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\" -T $f http://{}/{} }}",
+        socket, self.key
+      );
+      println!(
+        "cURL (CMD): FOR %f IN (f1, f2) DO curl -X POST -H \"File-Path: %f\" -T %f http://{}/{}",
+        socket, self.key
+      );
+      println!("Browser: http://{}/{}", socket, self.key);
+    }
+
     let upload_html = self.upload_html;
     let reserve = self.reserve;
-    for stream in self.listener.incoming() {
+    for stream in listener.incoming() {
       let key = self.key.clone();
       match stream {
-        Ok(mut stream) => {
+        Ok(stream) => {
           thread::spawn(move || {
             let peer_addr = stream.peer_addr().expect("Get peer socket failed");
-            let mut buf_reader = BufReader::new(&mut stream);
+            let mut buf_stream = BufStream::new(&stream);
             let mut request_line = String::new();
-            buf_reader
+            buf_stream
               .read_line(&mut request_line)
               .expect("Read line from buffer failed");
             if request_line.trim() == format!("GET /{} HTTP/1.1", key) {
-              stream
+              buf_stream
                 .write_all(
-                  b"HTTP/1.1 200 OK\r\n\
-                  Content-Type: text/html;charset=utf-8\r\n\
-                  \r\n",
+                  format!(
+                    "HTTP/1.1 200 OK\r\n\
+                    Content-Type: text/html;charset=utf-8\r\n\
+                    Content-Length: {}\r\n\
+                    \r\n",
+                    upload_html.len()
+                  )
+                  .as_bytes(),
                 )
                 .expect("Write response header failed");
-              stream.write_all(upload_html).expect("Write response body failed");
+              buf_stream.write_all(upload_html).expect("Write response body failed");
+              buf_stream.flush().expect("Flush stream failed");
               return;
             }
             if request_line.trim() != format!("POST /{} HTTP/1.1", key) {
-              stream
+              buf_stream
                 .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 .expect("Write response header failed");
+              buf_stream.flush().expect("Flush stream failed");
               println!("Bad Request (from {}): {}", peer_addr, request_line.trim());
               return;
             }
+            buf_stream
+              .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+              .expect("Write response header failed");
+            buf_stream.flush().expect("Flush stream failed");
             let mut line = String::new();
             let mut content_length = 0;
             let mut file_path: Option<PathBuf> = None;
-            let mut should_send_continue_response = false;
             loop {
-              buf_reader.read_line(&mut line).expect("Read line from buffer failed");
-              println!("{}", line.trim());
+              buf_stream.read_line(&mut line).expect("Read line from buffer failed");
               if line == "\r\n" {
                 break;
               }
@@ -259,9 +313,6 @@ impl NetCopy {
                   }
                 }
                 file_path = Some(path);
-              }
-              if line.trim() == "Expect: 100-continue" {
-                should_send_continue_response = true;
               }
               line.clear();
             }
@@ -290,11 +341,6 @@ impl NetCopy {
                 .unwrap_or_else(|e| panic!("Move {:?} to {:?} failed: {:?}", file_path, bak_path, e));
               println!("{:?} exists, moved to {:?}", file_path, bak_path);
             }
-            if should_send_continue_response {
-              stream
-                .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
-                .expect("Write response header failed");
-            }
             println!("\nRecving {:?} from {}", &file_path, peer_addr);
             let pb = ProgressBar::new(content_length);
             pb.set_style(
@@ -305,48 +351,34 @@ impl NetCopy {
                 })
                 .progress_chars("#>-"),
             );
-            const CHUNK_SIZE: u64 = 8 * 1024;
-            let mut buf = [0u8; CHUNK_SIZE as usize];
-            let mut buf_reader = BufReader::new(&mut stream);
-            let mut buf_writer = BufWriter::new(File::create(&file_path).expect("Create upload file failed"));
+            let mut buf = [0u8; 16 * 1024];
+            let mut file_writer = BufWriter::new(File::create(&file_path).expect("Create upload file failed"));
             let mut left_size = content_length;
             while left_size > 0 {
-              match buf_reader.read(&mut buf) {
+              match buf_stream.read(&mut buf) {
                 Ok(n) => {
-                  if n == 0 {
-                    println!("{} has closed the connection", peer_addr);
-                    return;
-                  }
-                  buf_writer.write_all(&buf[0..n]).expect("Write to upload file failed");
+                  file_writer.write_all(&buf[0..n]).expect("Write to upload file failed");
                   pb.inc(n as u64);
                   left_size -= n as u64;
                 }
                 Err(_) => {
-                  drop(buf_writer);
+                  drop(file_writer);
                   fs::remove_file(&file_path).expect("Remove partial received file failed");
                   panic!("Read data from stream failed, partial received file has been deleted");
                 }
               }
             }
-            buf_writer.flush().expect("Flush write buffer failed");
+            file_writer.flush().expect("Flush write buffer failed");
 
-            stream
+            buf_stream
               .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
               .expect("Write response header failed");
+            buf_stream.flush().expect("Flush stream failed");
             println!("Recv {:?} from {} done", &file_path, peer_addr);
           });
         }
         Err(e) => panic!("Error: {:?}", e),
       }
     }
-  }
-
-  fn proxy(&self) {
-    todo!();
-    // let socket = self.listener.local_addr().unwrap();
-    // println!("Net Copy: ncp -x {} -k {} [FILES]", socket, self.key);
-    // for stream in self.listener.incoming() {
-    //   let key = self.key.clone();
-    // }
   }
 }

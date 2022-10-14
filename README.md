@@ -71,9 +71,11 @@ Browser: http://172.17.0.8:15962/giSY01
 
 ## Proxy
 
-Not implement yet
+The proxy works as a server, and the sender/receiver detect proxy automatically from all network gateways. Although you can specific proxy servers from cli/env/config, that is usually not working, as the TCP connection is not easy to be established directly from the proxy server to the underlying sender/receiver.
+
+The usage scenario is run the proxy server on the host, and run sender/receiver in containers (not specific proxy server). It's just the same as running sender/receiver on host.
 
 # Note
 
 - If you get an error related to [glibc](https://www.gnu.org/software/libc/), please use the [musl](https://musl.libc.org/) version, which is static linking
-- Receiving files from browser upload may be get stuck, I don't know why (I have tried [`Fetch`](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch), [`XHR`](https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest), [`axios`](https://axios-http.com/) with `Edge` and `Safari`), need some help ಠ_ಠ
+- For android, you can use the `-unknown-linux-musl` version

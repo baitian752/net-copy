@@ -1,14 +1,14 @@
 use std::{
   env,
   fs::File,
-  io::{Read, Write},
-  net::{IpAddr, SocketAddr},
+  io::{Read, Write, BufRead},
+  net::{IpAddr, SocketAddr, TcpStream},
   path::PathBuf,
-  str::FromStr,
+  str::FromStr, time::Duration,
 };
 
+use bufstream::BufStream;
 use clap::{Parser, ValueEnum};
-use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 use portpicker::pick_unused_port;
 use rand::distributions::{Alphanumeric, DistString};
 use serde_derive::{Deserialize, Serialize};
@@ -34,12 +34,16 @@ struct Cli {
   key: Option<String>,
 
   /// Whether reserve the full path of the received file
-  #[clap(short = 'r', long, value_parser, action = clap::ArgAction::SetTrue)]
-  reserve: Option<bool>,
+  #[clap(short = 'r', long, value_parser)]
+  reserve: bool,
 
   /// Proxy for TCP connection
-  #[clap(short = 'x', long, value_parser)]
-  proxy: Option<SocketAddr>,
+  #[clap(short = 'x', long, value_parser, action = clap::ArgAction::Append)]
+  proxy: Option<Vec<IpAddr>>,
+
+  /// Disable automatically check proxy from gateway
+  #[clap(short = 'X', long, value_parser)]
+  no_proxy: bool,
 
   /// Serve mode
   #[clap(short = 'm', long, value_enum)]
@@ -51,8 +55,9 @@ struct Config {
   host: Option<IpAddr>,
   port: Option<u16>,
   key: Option<String>,
-  reserve: Option<bool>,
-  proxy: Option<SocketAddr>,
+  reserve: bool,
+  proxy: Option<Vec<IpAddr>>,
+  no_proxy: bool,
   mode: Option<Mode>,
 }
 
@@ -90,11 +95,11 @@ impl Config {
   fn from_env() -> Self {
     Self {
       host: match env::var("NCP_HOST") {
-        Ok(x) => Some(IpAddr::from_str(&x).expect("Parse IP from string failed")),
+        Ok(x) => Some(IpAddr::from_str(&x).unwrap()),
         Err(_) => None,
       },
       port: match env::var("NCP_PORT") {
-        Ok(x) => Some(u16::from_str(&x).expect("Parse port from string failed")),
+        Ok(x) => Some(u16::from_str(&x).unwrap()),
         Err(_) => None,
       },
       key: match env::var("NCP_KEY") {
@@ -102,15 +107,19 @@ impl Config {
         Err(_) => None,
       },
       reserve: match env::var("NCP_RESERVE") {
-        Ok(x) => Some(FromStr::from_str(&x).expect("Parse reserve from string failed")),
-        Err(_) => None,
+        Ok(x) => FromStr::from_str(&x).unwrap(),
+        Err(_) => false,
       },
       proxy: match env::var("NCP_PROXY") {
-        Ok(x) => Some(SocketAddr::from_str(&x).expect("Parse socket from string failed")),
+        Ok(x) => Some(x.split(':').map(|x| IpAddr::from_str(x).unwrap()).collect::<Vec<_>>()),
         Err(_) => None,
       },
+      no_proxy: match env::var("NCP_NO_PROXY") {
+        Ok(x) => FromStr::from_str(&x).unwrap(),
+        Err(_) => false,
+      },
       mode: match env::var("NCP_MODE") {
-        Ok(x) => Some(Mode::from_str(&x, true).expect("Parse mode from string failed")),
+        Ok(x) => Some(Mode::from_str(&x, true).unwrap()),
         Err(_) => None,
       },
     }
@@ -122,7 +131,8 @@ impl Config {
       port: cli.port,
       key: cli.key.clone(),
       reserve: cli.reserve,
-      proxy: cli.proxy,
+      proxy: cli.proxy.clone(),
+      no_proxy: cli.no_proxy,
       mode: cli.mode.clone(),
     }
   }
@@ -137,11 +147,14 @@ impl Config {
     if self.key.is_none() {
       self.key = config.key.clone();
     }
-    if self.reserve.is_none() {
+    if !self.reserve {
       self.reserve = config.reserve;
     }
     if self.proxy.is_none() {
-      self.proxy = config.proxy;
+      self.proxy = config.proxy.clone();
+    }
+    if !self.no_proxy {
+      self.no_proxy = config.no_proxy;
     }
     if self.mode.is_none() {
       self.mode = config.mode.clone();
@@ -175,9 +188,10 @@ impl Config {
               host = \"{}\"\n\
               # port = \n\
               # key = \n\
-              # reserve = \n\
+              reserve = false\n\
               # proxy = \n\
-              # mode = \n\
+              no_proxy = false\n\
+              # mode = \"normal\"\n\
               ",
             self.host.unwrap(),
           );
@@ -193,36 +207,133 @@ impl Config {
   }
 }
 
+fn check_proxy(ip: IpAddr, key: &str, socket: &SocketAddr) -> Option<SocketAddr> {
+  let addrs = [SocketAddr::from((ip, 7070)), SocketAddr::from((ip, 7575))];
+  for addr in &addrs {
+    match TcpStream::connect_timeout(addr, Duration::from_millis(100)) {
+      Ok(stream) => {
+        if stream.set_read_timeout(Some(Duration::from_millis(100))).is_err() {
+          println!("Set read timeout for stream failed");
+          continue;
+        }
+        let mut buf_stream = BufStream::new(stream);
+        if buf_stream
+          .write_all(format!("PROXY {} {}\r\n\r\n", key, socket).as_bytes())
+          .and_then(|_| buf_stream.flush())
+          .is_err()
+        {
+          println!("Writer to proxy failed");
+          continue;
+        }
+        let mut buf = String::new();
+        if buf_stream.read_line(&mut buf).is_err() {
+          println!("Read from proxy failed");
+          continue;
+        }
+        match SocketAddr::from_str(buf.trim()) {
+          Ok(socket) => {
+            return Some(socket);
+          }
+          Err(_) => {
+            println!("Parse socket from {} failed", addr);
+            continue;
+          }
+        }
+      }
+      Err(_) => continue,
+    }
+  }
+  None
+}
+
+fn get_proxy(proxy_servers: &[IpAddr], key: &str, socket: SocketAddr) -> Option<SocketAddr> {
+  let addrs = [
+    SocketAddr::from(([127, 0, 0, 1], 7070)),
+    SocketAddr::from(([127, 0, 0, 1], 7575)),
+  ];
+  for addr in &addrs {
+    match TcpStream::connect_timeout(addr, Duration::from_millis(100)) {
+      Ok(stream) => {
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let mut buf_stream = BufStream::new(stream);
+        buf_stream.write_all(b"CHECK\r\n\r\n").unwrap();
+        buf_stream.flush().unwrap();
+        let mut buf = String::new();
+        match buf_stream.read_line(&mut buf) {
+          Ok(_) => {
+            if buf.trim() == "OK" {
+              return None;
+            }
+            continue;
+          }
+          Err(_) => continue,
+        }
+      }
+      Err(_) => continue,
+    }
+  }
+  let interfaces = default_net::get_interfaces();
+  let interfaces = interfaces
+    .iter()
+    .filter(|interface| {
+      interface.if_type == default_net::interface::InterfaceType::Ethernet
+        && !interface.ipv4.is_empty()
+        && interface.gateway.is_some()
+    })
+    .collect::<Vec<_>>();
+  for ip in proxy_servers {
+    if let Some(proxy) = check_proxy(*ip, key, &socket) {
+      return Some(proxy);
+    }
+  }
+  for interface in interfaces {
+    let gateway = interface.gateway.as_ref().unwrap().ip_addr;
+    if let Some(proxy) = check_proxy(gateway, key, &socket) {
+      return Some(proxy);
+    }
+  }
+  None
+}
+
 fn main() {
   let cli = Cli::parse();
 
+  let mut promt_save_config = true;
   let mut config = Config::new(&cli);
   if config.host.is_none() {
-    let ifas = NetworkInterface::show().expect("List network interface failed");
-    let ifas = ifas
+    let interfaces = default_net::get_interfaces();
+    let interfaces = interfaces
       .iter()
-      .filter(|ifa| ifa.addr.is_some() && ifa.addr.unwrap().ip().is_ipv4())
+      .filter(|interface| {
+        interface.if_type == default_net::interface::InterfaceType::Ethernet && !interface.ipv4.is_empty()
+      })
       .collect::<Vec<_>>();
-    let ip_addr = if ifas.is_empty() {
+    let ip_addr = if interfaces.is_empty() {
       panic!("Cannot find any valid network interface");
-    } else if ifas.len() == 1 {
-      ifas[0].addr.unwrap().ip()
+    } else if interfaces.len() == 1 {
+      promt_save_config = false;
+      interfaces[0].ipv4[0].addr
     } else {
-      for (i, ifa) in ifas.iter().enumerate() {
-        println!("{i}: <{}> {}", ifa.name, ifa.addr.unwrap().ip());
+      for (i, interface) in interfaces.iter().enumerate() {
+        println!("{i}: <{}> {}", interface.name, interface.ipv4[0].addr);
       }
-      println!("{} net interfaces have been found, please choose one:", ifas.len());
+      println!(
+        "{} net interfaces have been found, please choose one:",
+        interfaces.len()
+      );
       let mut input = String::new();
       let ip_index = match std::io::stdin().read_line(&mut input) {
         Ok(_) => input.trim().parse::<usize>().expect("Parse input as integer failed"),
         Err(_) => panic!("Please choose one IP address"),
       };
-      let ip_addr = ifas.get(ip_index).expect("IP index out of range").addr.unwrap().ip();
+      let ip_addr = interfaces.get(ip_index).expect("IP index out of range").ipv4[0].addr;
       ip_addr
     };
-    config.host = Some(ip_addr);
+    config.host = Some(IpAddr::V4(ip_addr));
   }
-  config.save();
+  if promt_save_config {
+    config.save();
+  }
 
   let mode = config.mode.unwrap_or(Mode::Normal);
   let key = &config
@@ -239,8 +350,14 @@ fn main() {
     })
   ))
   .unwrap();
-  let reserve = config.reserve.unwrap_or(false);
+  let reserve = config.reserve;
+  let proxy_servers = config.proxy.unwrap_or_default();
+  let proxy = if config.no_proxy {
+    None
+  } else {
+    get_proxy(&proxy_servers, key, socket)
+  };
 
   let upload_html = include_bytes!("html/upload.html");
-  NetCopy::new(mode, cli.files, key, socket, upload_html, reserve).run();
+  NetCopy::new(mode, cli.files, key, socket, upload_html, reserve, proxy).run();
 }

@@ -64,12 +64,16 @@
             continue;
           }
           statusElement.innerText = 'Uploading';
-          await fetch(location.href, {
+          let response = await fetch(location.href, {
             method: 'POST',
             headers: { 'File-Path': file.name },
             body: file
           });
-          statusElement.innerText = 'Done';
+          if (response.status === 200) {
+            statusElement.innerText = 'Done';
+          } else {
+            statusElement.innerText = 'Error';
+          }
         }
       });
     }
