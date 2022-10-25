@@ -8,9 +8,8 @@ A simple command line tool to transfer files with HTTP
 
 ## Help
 
-```shell
-$ ncp --help
-A simple command line tool to transfer files with HTTP
+```text
+$ A simple command line tool to transfer files with HTTP
 
 Usage: ncp [OPTIONS] [FILES]...
 
@@ -23,6 +22,7 @@ Options:
   -k, --key <STRING>   The secret key for the server
   -r, --reserve        Whether reserve the full path of the received file
   -x, --proxy <PROXY>  Proxy for TCP connection
+  -X, --no-proxy       Disable automatically check proxy from gateway
   -m, --mode <MODE>    Serve mode [possible values: normal, proxy]
   -h, --help           Print help information
   -V, --version        Print version information
@@ -71,9 +71,7 @@ Browser: http://172.17.0.8:15962/giSY01
 
 ## Proxy
 
-The proxy works as a server, and the sender/receiver detect proxy automatically from all network gateways. Although you can specific proxy servers from cli/env/config, that is usually not working, as the TCP connection is not easy to be established directly from the proxy server to the underlying sender/receiver.
-
-The usage scenario is run the proxy server on the host, and run sender/receiver in containers (not specific proxy server). It's just the same as running sender/receiver on host.
+The proxy works as a server, and the sender/receiver detect proxy automatically from all network gateways, or you can specific proxy servers from cli/env/config.
 
 # Note
 

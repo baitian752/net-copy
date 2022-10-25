@@ -1,19 +1,21 @@
 use std::{
   env,
-  fs::File,
-  io::{Read, Write, BufRead},
-  net::{IpAddr, SocketAddr, TcpStream},
+  fs::{create_dir_all, File},
+  io::{Read, Write},
+  net::{IpAddr, SocketAddr},
   path::PathBuf,
-  str::FromStr, time::Duration,
+  str::FromStr,
 };
 
-use bufstream::BufStream;
 use clap::{Parser, ValueEnum};
 use portpicker::pick_unused_port;
 use rand::distributions::{Alphanumeric, DistString};
 use serde_derive::{Deserialize, Serialize};
 
-use net_copy::{Mode, NetCopy};
+use net_copy::{
+  net_copy::{Mode, NetCopy},
+  proxy::ProxyConsumer,
+};
 
 #[derive(Parser)]
 #[command(name = "Net Copy", author, version, about, long_about = None)]
@@ -183,6 +185,14 @@ impl Config {
     match std::io::stdin().read_line(&mut input) {
       Ok(_) => {
         if input.trim().to_uppercase() == "Y" {
+          if let Some(parent) = config_file_path.parent() {
+            if !parent.is_dir() {
+              if let Err(e) = create_dir_all(parent) {
+                println!("Create directoty {:?} for config file failed: {}", parent, e);
+                return;
+              }
+            }
+          }
           let config_str = format!(
             "\
               host = \"{}\"\n\
@@ -205,94 +215,6 @@ impl Config {
       Err(_) => println!("Save config aborted"),
     }
   }
-}
-
-fn check_proxy(ip: IpAddr, key: &str, socket: &SocketAddr) -> Option<SocketAddr> {
-  let addrs = [SocketAddr::from((ip, 7070)), SocketAddr::from((ip, 7575))];
-  for addr in &addrs {
-    match TcpStream::connect_timeout(addr, Duration::from_millis(100)) {
-      Ok(stream) => {
-        if stream.set_read_timeout(Some(Duration::from_millis(100))).is_err() {
-          println!("Set read timeout for stream failed");
-          continue;
-        }
-        let mut buf_stream = BufStream::new(stream);
-        if buf_stream
-          .write_all(format!("PROXY {} {}\r\n\r\n", key, socket).as_bytes())
-          .and_then(|_| buf_stream.flush())
-          .is_err()
-        {
-          println!("Writer to proxy failed");
-          continue;
-        }
-        let mut buf = String::new();
-        if buf_stream.read_line(&mut buf).is_err() {
-          println!("Read from proxy failed");
-          continue;
-        }
-        match SocketAddr::from_str(buf.trim()) {
-          Ok(socket) => {
-            return Some(socket);
-          }
-          Err(_) => {
-            println!("Parse socket from {} failed", addr);
-            continue;
-          }
-        }
-      }
-      Err(_) => continue,
-    }
-  }
-  None
-}
-
-fn get_proxy(proxy_servers: &[IpAddr], key: &str, socket: SocketAddr) -> Option<SocketAddr> {
-  let addrs = [
-    SocketAddr::from(([127, 0, 0, 1], 7070)),
-    SocketAddr::from(([127, 0, 0, 1], 7575)),
-  ];
-  for addr in &addrs {
-    match TcpStream::connect_timeout(addr, Duration::from_millis(100)) {
-      Ok(stream) => {
-        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-        let mut buf_stream = BufStream::new(stream);
-        buf_stream.write_all(b"CHECK\r\n\r\n").unwrap();
-        buf_stream.flush().unwrap();
-        let mut buf = String::new();
-        match buf_stream.read_line(&mut buf) {
-          Ok(_) => {
-            if buf.trim() == "OK" {
-              return None;
-            }
-            continue;
-          }
-          Err(_) => continue,
-        }
-      }
-      Err(_) => continue,
-    }
-  }
-  let interfaces = default_net::get_interfaces();
-  let interfaces = interfaces
-    .iter()
-    .filter(|interface| {
-      interface.if_type == default_net::interface::InterfaceType::Ethernet
-        && !interface.ipv4.is_empty()
-        && interface.gateway.is_some()
-    })
-    .collect::<Vec<_>>();
-  for ip in proxy_servers {
-    if let Some(proxy) = check_proxy(*ip, key, &socket) {
-      return Some(proxy);
-    }
-  }
-  for interface in interfaces {
-    let gateway = interface.gateway.as_ref().unwrap().ip_addr;
-    if let Some(proxy) = check_proxy(gateway, key, &socket) {
-      return Some(proxy);
-    }
-  }
-  None
 }
 
 fn main() {
@@ -355,7 +277,7 @@ fn main() {
   let proxy = if config.no_proxy {
     None
   } else {
-    get_proxy(&proxy_servers, key, socket)
+    ProxyConsumer::try_get(&proxy_servers, key)
   };
 
   let upload_html = include_bytes!("html/upload.html");
