@@ -236,9 +236,15 @@ impl ProxyListener {
         request_method = Some(chunks[0].to_string());
         key = Some(chunks[1].trim_start_matches('/').to_string());
       }
-      if request_method.as_ref().unwrap() == "POST" && line.starts_with("Content-Length:") {
+      if content_length.is_none() && request_method.as_ref().unwrap() == "POST" && line.starts_with("Content-Length:") {
         content_length = match line.trim().split(':').take(2).last() {
-          Some(value) => Some(value.trim().parse::<u64>()),
+          Some(value) => match value.trim().parse::<u64>() {
+            Ok(v) => Some(v),
+            Err(e) => {
+              println!("Parse content length from header failed: {}", e);
+              return;
+            }
+          },
           None => {
             println!("Parse content length from header failed");
             return;
@@ -288,9 +294,15 @@ impl ProxyListener {
       if line == "\r\n" {
         break;
       }
-      if request_method == "GET" && line.starts_with("Content-Length:") {
+      if content_length.is_none() && request_method == "GET" && line.starts_with("Content-Length:") {
         content_length = match line.trim().split(':').take(2).last() {
-          Some(value) => Some(value.trim().parse::<u64>()),
+          Some(value) => match value.trim().parse::<u64>() {
+            Ok(v) => Some(v),
+            Err(e) => {
+              println!("Parse content length from header failed: {}", e);
+              return;
+            }
+          },
           None => {
             println!("Parse content length from header failed");
             return;
@@ -316,7 +328,7 @@ impl ProxyListener {
     } else {
       (&mut buf_stream, &mut underlying_buf_stream)
     };
-    let mut left_size = content_length.unwrap();
+    let mut left_size = content_length;
     let mut buf = [0u8; 16 * 1024];
     while left_size > 0 {
       match reader.read(&mut buf) {

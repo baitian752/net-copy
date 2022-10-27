@@ -1,221 +1,19 @@
 use std::{
-  env,
-  fs::{create_dir_all, File},
-  io::{Read, Write},
   net::{IpAddr, SocketAddr},
-  path::PathBuf,
   str::FromStr,
 };
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use portpicker::pick_unused_port;
 use rand::distributions::{Alphanumeric, DistString};
-use serde_derive::{Deserialize, Serialize};
 
 use net_copy::{
-  net_copy::{Mode, NetCopy},
-  proxy::ProxyConsumer,
+  cli::Cli,
+  config::{Config, Mode},
+  proxy::{Proxy, ProxyConsumer},
+  recv::Recv,
+  send::Send,
 };
-
-#[derive(Parser)]
-#[command(name = "Net Copy", author, version, about, long_about = None)]
-struct Cli {
-  /// The files to be sent, empty means serve as receiver
-  files: Vec<PathBuf>,
-
-  /// The host ip for the server
-  #[clap(short = 'l', long, value_parser)]
-  host: Option<IpAddr>,
-
-  /// The port for the server
-  #[clap(short = 'p', long, value_parser)]
-  port: Option<u16>,
-
-  /// The secret key for the server
-  #[clap(short = 'k', long, value_parser, value_name = "STRING")]
-  key: Option<String>,
-
-  /// Whether reserve the full path of the received file
-  #[clap(short = 'r', long, value_parser)]
-  reserve: bool,
-
-  /// Proxy for TCP connection
-  #[clap(short = 'x', long, value_parser, action = clap::ArgAction::Append)]
-  proxy: Option<Vec<IpAddr>>,
-
-  /// Disable automatically check proxy from gateway
-  #[clap(short = 'X', long, value_parser)]
-  no_proxy: bool,
-
-  /// Serve mode
-  #[clap(short = 'm', long, value_enum)]
-  mode: Option<Mode>,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct Config {
-  host: Option<IpAddr>,
-  port: Option<u16>,
-  key: Option<String>,
-  reserve: bool,
-  proxy: Option<Vec<IpAddr>>,
-  no_proxy: bool,
-  mode: Option<Mode>,
-}
-
-impl Config {
-  fn from_file() -> Self {
-    let mut config_file_path = if env::consts::OS == "windows" {
-      if let Ok(p) = env::var("APPDATA") {
-        PathBuf::from_str(&p)
-      } else {
-        PathBuf::from_str("C:")
-      }
-      .unwrap()
-      .join("ncp.toml")
-    } else {
-      PathBuf::from_str("/etc/ncp.toml").unwrap()
-    };
-    if let Some(home_path) = home::home_dir() {
-      let user_config_file_path = home_path.join(".config").join("ncp.toml");
-      if user_config_file_path.is_file() {
-        config_file_path = user_config_file_path;
-      }
-    }
-    if config_file_path.is_file() {
-      let mut config_str = String::new();
-      File::open(config_file_path)
-        .expect("Open config file failed")
-        .read_to_string(&mut config_str)
-        .expect("Read config file failed");
-      toml::from_str(&config_str).expect("Parse config file failed")
-    } else {
-      Self::default()
-    }
-  }
-
-  fn from_env() -> Self {
-    Self {
-      host: match env::var("NCP_HOST") {
-        Ok(x) => Some(IpAddr::from_str(&x).unwrap()),
-        Err(_) => None,
-      },
-      port: match env::var("NCP_PORT") {
-        Ok(x) => Some(u16::from_str(&x).unwrap()),
-        Err(_) => None,
-      },
-      key: match env::var("NCP_KEY") {
-        Ok(x) => Some(x),
-        Err(_) => None,
-      },
-      reserve: match env::var("NCP_RESERVE") {
-        Ok(x) => FromStr::from_str(&x).unwrap(),
-        Err(_) => false,
-      },
-      proxy: match env::var("NCP_PROXY") {
-        Ok(x) => Some(x.split(':').map(|x| IpAddr::from_str(x).unwrap()).collect::<Vec<_>>()),
-        Err(_) => None,
-      },
-      no_proxy: match env::var("NCP_NO_PROXY") {
-        Ok(x) => FromStr::from_str(&x).unwrap(),
-        Err(_) => false,
-      },
-      mode: match env::var("NCP_MODE") {
-        Ok(x) => Some(Mode::from_str(&x, true).unwrap()),
-        Err(_) => None,
-      },
-    }
-  }
-
-  fn from_cli(cli: &Cli) -> Self {
-    Self {
-      host: cli.host,
-      port: cli.port,
-      key: cli.key.clone(),
-      reserve: cli.reserve,
-      proxy: cli.proxy.clone(),
-      no_proxy: cli.no_proxy,
-      mode: cli.mode.clone(),
-    }
-  }
-
-  fn merge(&mut self, config: &Self) -> &mut Self {
-    if self.host.is_none() {
-      self.host = config.host;
-    }
-    if self.port.is_none() {
-      self.port = config.port;
-    }
-    if self.key.is_none() {
-      self.key = config.key.clone();
-    }
-    if !self.reserve {
-      self.reserve = config.reserve;
-    }
-    if self.proxy.is_none() {
-      self.proxy = config.proxy.clone();
-    }
-    if !self.no_proxy {
-      self.no_proxy = config.no_proxy;
-    }
-    if self.mode.is_none() {
-      self.mode = config.mode.clone();
-    }
-    self
-  }
-
-  pub fn new(cli: &Cli) -> Self {
-    let mut config = Self::from_cli(cli);
-    config.merge(&Self::from_env()).merge(&Self::from_file());
-    config
-  }
-
-  pub fn save(&self) {
-    let config_file_path = if let Some(home_path) = home::home_dir() {
-      home_path.join(".config").join("ncp.toml")
-    } else {
-      PathBuf::from_str("/etc/ncp.toml").unwrap()
-    };
-
-    if config_file_path.is_file() {
-      return;
-    }
-    let mut input = String::new();
-    println!("Save config? [y/N]");
-    match std::io::stdin().read_line(&mut input) {
-      Ok(_) => {
-        if input.trim().to_uppercase() == "Y" {
-          if let Some(parent) = config_file_path.parent() {
-            if !parent.is_dir() {
-              if let Err(e) = create_dir_all(parent) {
-                println!("Create directoty {:?} for config file failed: {}", parent, e);
-                return;
-              }
-            }
-          }
-          let config_str = format!(
-            "\
-              host = \"{}\"\n\
-              # port = \n\
-              # key = \n\
-              reserve = false\n\
-              # proxy = \n\
-              no_proxy = false\n\
-              # mode = \"normal\"\n\
-              ",
-            self.host.unwrap(),
-          );
-          File::create(&config_file_path)
-            .expect("Create config file failed")
-            .write_all(config_str.as_bytes())
-            .expect("Write to config file failed");
-          println!("Config has been written to {}", config_file_path.to_str().unwrap());
-        }
-      }
-      Err(_) => println!("Save config aborted"),
-    }
-  }
-}
 
 fn main() {
   let cli = Cli::parse();
@@ -224,14 +22,15 @@ fn main() {
   let mut config = Config::new(&cli);
   if config.host.is_none() {
     let interfaces = default_net::get_interfaces();
-    let interfaces = interfaces
+    let interfaces: Vec<_> = interfaces
       .iter()
       .filter(|interface| {
         interface.if_type == default_net::interface::InterfaceType::Ethernet && !interface.ipv4.is_empty()
       })
-      .collect::<Vec<_>>();
+      .collect();
     let ip_addr = if interfaces.is_empty() {
-      panic!("Cannot find any valid network interface");
+      println!("Cannot find any valid network interface");
+      return;
     } else if interfaces.len() == 1 {
       promt_save_config = false;
       interfaces[0].ipv4[0].addr
@@ -245,10 +44,25 @@ fn main() {
       );
       let mut input = String::new();
       let ip_index = match std::io::stdin().read_line(&mut input) {
-        Ok(_) => input.trim().parse::<usize>().expect("Parse input as integer failed"),
-        Err(_) => panic!("Please choose one IP address"),
+        Ok(_) => match input.trim().parse::<usize>() {
+          Ok(value) => value,
+          Err(e) => {
+            println!("Parse input as integer failed: {}", e);
+            return;
+          }
+        },
+        Err(e) => {
+          println!("Read line failed: {}", e);
+          return;
+        }
       };
-      let ip_addr = interfaces.get(ip_index).expect("IP index out of range").ipv4[0].addr;
+      let ip_addr = match interfaces.get(ip_index) {
+        Some(item) => item.ipv4[0].addr,
+        None => {
+          println!("IP index out of range");
+          return;
+        }
+      };
       ip_addr
     };
     config.host = Some(IpAddr::V4(ip_addr));
@@ -267,7 +81,9 @@ fn main() {
     config.port.unwrap_or_else(|| {
       match pick_unused_port() {
         Some(port) => port,
-        None => panic!("Pick unused port failed"),
+        None => {
+          panic!("Pick unused port failed");
+        }
       }
     })
   ))
@@ -280,6 +96,19 @@ fn main() {
     ProxyConsumer::try_get(&proxy_servers, key)
   };
 
-  let upload_html = include_bytes!("html/upload.html");
-  NetCopy::new(mode, cli.files, key, socket, upload_html, reserve, proxy).run();
+  match mode {
+    Mode::Normal => {
+      if cli.files.is_empty() {
+        Recv::new(key.clone(), socket, proxy, reserve).run();
+      } else {
+        Send::new(key.clone(), socket, proxy, cli.files).run();
+      }
+    }
+    Mode::Proxy => {
+      if !cli.files.is_empty() {
+        println!("WARNING: The proxy mode has activated, files will be ignored");
+      }
+      Proxy::run(socket);
+    }
+  }
 }
