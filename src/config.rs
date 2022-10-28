@@ -165,7 +165,7 @@ impl Config {
               # port = \n\
               # key = \n\
               reserve = false\n\
-              # proxy = \n\
+              proxy = []\n\
               no_proxy = false\n\
               # mode = \"normal\"\n\
               ",

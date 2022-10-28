@@ -7,7 +7,7 @@ homepage = "https://github.com/baitian752/net-copy"
 license = "MIT"
 name = "net-copy"
 repository = "https://github.com/baitian752/net-copy"
-version = "0.0.4"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,16 +16,16 @@ name = "ncp"
 path = "src/main.rs"
 
 [dependencies]
-bufstream = "0.1.4"
+bufstream = "0.1"
 clap = { version = "4.0", features = ["derive"] }
-ctrlc = "3.2.3"
-default-net = "0.11.0"
-home = "0.5.4"
-indicatif = "0.17.1"
+ctrlc = "3.2"
+default-net = "0.11"
+home = "0.5"
+indicatif = "0.17"
 mime_guess = "2.0"
-portpicker = "0.1.1"
-rand = "0.8.5"
+portpicker = "0.1"
+rand = "0.8"
 serde_derive = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tar = "0.4.38"
-toml = "0.5.9"
+tar = "0.4"
+toml = "0.5"

@@ -99,9 +99,9 @@ fn main() {
   match mode {
     Mode::Normal => {
       if cli.files.is_empty() {
-        Recv::new(key.clone(), socket, proxy, reserve).run();
+        Recv::run(key.clone(), socket, reserve, proxy);
       } else {
-        Send::new(key.clone(), socket, proxy, cli.files).run();
+        Send::run(key.clone(), socket, proxy, cli.files);
       }
     }
     Mode::Proxy => {

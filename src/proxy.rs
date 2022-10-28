@@ -1,6 +1,7 @@
 use std::{
   collections::HashMap,
   io::{BufRead, Read, Write},
+  iter,
   net::{IpAddr, SocketAddr, TcpListener, TcpStream},
   str::FromStr,
   sync::mpsc::{channel, Receiver, Sender},
@@ -47,14 +48,14 @@ impl Proxy {
   }
 }
 
-struct ProxyMaster {
+pub struct ProxyMaster {
   masters: HashMap<String, TcpStream>,
   listener_socket: SocketAddr,
   listener_event: ListenerEvent,
 }
 
 impl ProxyMaster {
-  pub fn new(listener_socket: SocketAddr, listener_event: ListenerEvent) -> Self {
+  fn new(listener_socket: SocketAddr, listener_event: ListenerEvent) -> Self {
     Self {
       masters: HashMap::new(),
       listener_socket,
@@ -127,13 +128,24 @@ impl ProxyMaster {
           println!("Send TCP stream failed: {}", e);
         }
       }
+      "END" => {
+        if chunks.len() < 2 {
+          println!("Wrong cmd from {}", target_socket);
+        } else if !self.masters.contains_key(chunks[1]) {
+          println!("The key {} doesn't exist", chunks[1]);
+        } else {
+          self.masters.remove(chunks[1]);
+          println!("The key {} removed", chunks[1]);
+          println!("Left nodes: {}", self.masters.len());
+        }
+      }
       _ => {
         println!("Bad cmd from {}", target_socket);
       }
     }
   }
 
-  pub fn run(&mut self) {
+  fn run(&mut self) {
     let addrs = [
       SocketAddr::from(([0, 0, 0, 0], 7070)),
       SocketAddr::from(([0, 0, 0, 0], 7575)),
@@ -170,6 +182,58 @@ impl ProxyMaster {
           continue;
         }
       }
+    }
+  }
+
+  pub fn get_transport_stream(key: String, master_stream: TcpStream) -> impl iter::Iterator<Item = TcpStream> {
+    let master_socket = master_stream.peer_addr().unwrap();
+    let mut master_buf_stream = BufStream::new(master_stream);
+    iter::from_fn(move || {
+      let mut lines = vec![];
+      loop {
+        let mut line = String::new();
+        if let Err(e) = master_buf_stream.read_line(&mut line) {
+          println!("Read data from proxy master failed: {}", e);
+          return None;
+        }
+        if line == "\r\n" {
+          break;
+        }
+        lines.push(line);
+      }
+      if lines.is_empty() {
+        println!("Empty data from proxy master");
+        return None;
+      }
+      if lines[0].trim() == "REQUEST" {
+        let mut stream = match TcpStream::connect(master_socket) {
+          Ok(stream) => stream,
+          Err(e) => {
+            println!("Connect to proxy master failed: {}", e);
+            return None;
+          }
+        };
+        if let Err(e) = stream
+          .write_all(format!("SEND {}\r\n\r\n", key).as_bytes())
+          .and_then(|_| stream.flush())
+        {
+          println!("Write to master stream failed: {}", e);
+          return None;
+        }
+        Some(stream)
+      } else {
+        None
+      }
+    })
+  }
+
+  pub fn end_proxy(key: &str, socket: SocketAddr) {
+    if let Err(e) = TcpStream::connect(socket).and_then(|mut stream| {
+      stream
+        .write_all(format!("END {}\r\n\r\n", key).as_bytes())
+        .and_then(|_| stream.flush())
+    }) {
+      println!("Send END to proxy master failed: {}", e);
     }
   }
 }
@@ -255,115 +319,119 @@ impl ProxyListener {
     }
     let request_method = request_method.unwrap();
     let key = key.unwrap();
-    let underlying_stream = match self.request_target_stream(&key) {
+    let underlying_stream = match self.get_transport_stream(&key) {
       Some(stream) => stream,
       None => {
         println!("Get underlying TCP stream failed");
         return;
       }
     };
-    let underlying_socket = match underlying_stream.peer_addr() {
-      Ok(socket) => socket,
-      Err(_) => {
-        println!("Get underlying socket failed");
-        return;
-      }
-    };
-    println!("\nProxy: {} <-> master <-> {}", target_socket, underlying_socket);
-    let mut underlying_buf_stream = BufStream::new(underlying_stream);
-    for header in &headers {
-      if let Err(e) = underlying_buf_stream.write_all(header.as_bytes()) {
-        println!("Write to underlying stream failed: {}", e);
-        return;
-      }
-    }
-    if let Err(e) = underlying_buf_stream
-      .write_all(b"\r\n")
-      .and_then(|_| underlying_buf_stream.flush())
-    {
-      println!("Write to underlying stream failed: {}", e);
-      return;
-    }
-    headers.clear();
-    loop {
-      let mut line = String::new();
-      if let Err(e) = underlying_buf_stream.read_line(&mut line) {
-        println!("Read data from underlying stream failed: {}", e);
-        return;
-      }
-      if line == "\r\n" {
-        break;
-      }
-      if content_length.is_none() && request_method == "GET" && line.starts_with("Content-Length:") {
-        content_length = match line.trim().split(':').take(2).last() {
-          Some(value) => match value.trim().parse::<u64>() {
-            Ok(v) => Some(v),
-            Err(e) => {
-              println!("Parse content length from header failed: {}", e);
-              return;
-            }
-          },
-          None => {
-            println!("Parse content length from header failed");
-            return;
-          }
-        }
-      }
-      headers.push(line);
-    }
-    let content_length = content_length.unwrap();
-    for header in &headers {
-      if let Err(e) = buf_stream.write_all(header.as_bytes()) {
-        println!("Write to target stream failed: {}", e);
-        return;
-      }
-    }
-    if let Err(e) = buf_stream.write_all(b"\r\n").and_then(|_| buf_stream.flush()) {
-      println!("Write to target stream failed: {}", e);
-      return;
-    }
 
-    let (reader, writer) = if request_method == "GET" {
-      (&mut underlying_buf_stream, &mut buf_stream)
-    } else {
-      (&mut buf_stream, &mut underlying_buf_stream)
-    };
-    let mut left_size = content_length;
-    let mut buf = [0u8; 16 * 1024];
-    while left_size > 0 {
-      match reader.read(&mut buf) {
-        Ok(n) => {
-          if let Err(e) = writer.write_all(&buf[0..n]) {
-            println!("Write to stream failed: {}", e);
-            return;
-          }
-          left_size -= n as u64;
-        }
+    thread::spawn(move || {
+      let underlying_socket = match underlying_stream.peer_addr() {
+        Ok(socket) => socket,
         Err(_) => {
-          println!("Read from stream failed");
+          println!("Get underlying socket failed");
+          return;
+        }
+      };
+
+      println!("\nProxy: {} <-> master <-> {}", target_socket, underlying_socket);
+      let mut underlying_buf_stream = BufStream::new(underlying_stream);
+      for header in &headers {
+        if let Err(e) = underlying_buf_stream.write_all(header.as_bytes()) {
+          println!("Write to underlying stream failed: {}", e);
           return;
         }
       }
-    }
-    if let Err(e) = writer.flush() {
-      println!("Flush writer failed: {}", e);
-      return;
-    }
-    if request_method == "POST" {
-      let mut buf = vec![];
-      if let Err(e) = underlying_buf_stream.read_to_end(&mut buf) {
-        println!("Read from underlying stream failed: {}", e);
+      if let Err(e) = underlying_buf_stream
+        .write_all(b"\r\n")
+        .and_then(|_| underlying_buf_stream.flush())
+      {
+        println!("Write to underlying stream failed: {}", e);
         return;
       }
-      if let Err(e) = buf_stream.write_all(&buf).and_then(|_| buf_stream.flush()) {
+      headers.clear();
+      loop {
+        let mut line = String::new();
+        if let Err(e) = underlying_buf_stream.read_line(&mut line) {
+          println!("Read data from underlying stream failed: {}", e);
+          return;
+        }
+        if line == "\r\n" {
+          break;
+        }
+        if content_length.is_none() && request_method == "GET" && line.starts_with("Content-Length:") {
+          content_length = match line.trim().split(':').take(2).last() {
+            Some(value) => match value.trim().parse::<u64>() {
+              Ok(v) => Some(v),
+              Err(e) => {
+                println!("Parse content length from header failed: {}", e);
+                return;
+              }
+            },
+            None => {
+              println!("Parse content length from header failed");
+              return;
+            }
+          }
+        }
+        headers.push(line);
+      }
+      let content_length = content_length.unwrap();
+      for header in &headers {
+        if let Err(e) = buf_stream.write_all(header.as_bytes()) {
+          println!("Write to target stream failed: {}", e);
+          return;
+        }
+      }
+      if let Err(e) = buf_stream.write_all(b"\r\n").and_then(|_| buf_stream.flush()) {
         println!("Write to target stream failed: {}", e);
         return;
       }
-    }
-    println!("Proxy: {} <-> master <-> {} done", target_socket, underlying_socket);
+
+      let (reader, writer) = if request_method == "GET" {
+        (&mut underlying_buf_stream, &mut buf_stream)
+      } else {
+        (&mut buf_stream, &mut underlying_buf_stream)
+      };
+      let mut left_size = content_length;
+      let mut buf = [0u8; 16 * 1024];
+      while left_size > 0 {
+        match reader.read(&mut buf) {
+          Ok(n) => {
+            if let Err(e) = writer.write_all(&buf[0..n]) {
+              println!("Write to stream failed: {}", e);
+              return;
+            }
+            left_size -= n as u64;
+          }
+          Err(_) => {
+            println!("Read from stream failed");
+            return;
+          }
+        }
+      }
+      if let Err(e) = writer.flush() {
+        println!("Flush writer failed: {}", e);
+        return;
+      }
+      if request_method == "POST" {
+        let mut buf = vec![];
+        if let Err(e) = underlying_buf_stream.read_to_end(&mut buf) {
+          println!("Read from underlying stream failed: {}", e);
+          return;
+        }
+        if let Err(e) = buf_stream.write_all(&buf).and_then(|_| buf_stream.flush()) {
+          println!("Write to target stream failed: {}", e);
+          return;
+        }
+      }
+      println!("Proxy: {} <-> master <-> {} done", target_socket, underlying_socket);
+    });
   }
 
-  fn request_target_stream(&self, key: &str) -> Option<TcpStream> {
+  fn get_transport_stream(&self, key: &str) -> Option<TcpStream> {
     match self.master_event.sender.send(key.to_string()) {
       Ok(_) => match self.master_event.receiver.recv() {
         Ok((recv_key, stream)) => {

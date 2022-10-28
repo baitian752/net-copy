@@ -4,6 +4,7 @@ use std::{
   io::{BufRead, BufWriter, Read, Write},
   net::{SocketAddr, TcpListener, TcpStream},
   path::PathBuf,
+  process,
   str::FromStr,
   thread,
 };
@@ -11,29 +12,15 @@ use std::{
 use bufstream::BufStream;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
-use crate::proxy::ProxyConsumer;
+use crate::proxy::{ProxyConsumer, ProxyMaster};
 
 static UPLOAD_HTML: &[u8] = include_bytes!("html/upload.html");
 
-pub struct Recv {
-  key: String,
-  socket: SocketAddr,
-  proxy: Option<ProxyConsumer>,
-  reserve: bool,
-}
+pub struct Recv {}
 
 impl Recv {
-  pub fn new(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>, reserve: bool) -> Self {
-    Self {
-      key,
-      socket,
-      proxy,
-      reserve,
-    }
-  }
-
-  pub fn run(&self) {
-    self.recv();
+  pub fn run(key: String, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>) {
+    Self::recv(key, socket, reserve, proxy);
   }
 
   fn to_os_path(path: &str, reserve: bool) -> PathBuf {
@@ -106,7 +93,6 @@ impl Recv {
         .and_then(|_| buf_stream.flush())
       {
         println!("Write response header failed: {}", e);
-        return;
       }
       return;
     }
@@ -232,79 +218,58 @@ impl Recv {
     println!("Recv {:?} from {} done", file_path, peer_addr);
   }
 
-  fn recv(&self) {
-    let pub_addr = if let Some(proxy) = &self.proxy {
-      proxy.public_socket
+  fn recv(key: String, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>) {
+    let (pub_addr, proxy_master_socket) = if let Some(proxy) = &proxy {
+      (proxy.public_socket, Some(proxy.master_stream.peer_addr().unwrap()))
     } else {
-      self.socket
+      (socket, None)
     };
+
+    let key_cloned = key.clone();
+    if let Err(e) = ctrlc::set_handler(move || {
+      if let Some(socket) = proxy_master_socket {
+        ProxyMaster::end_proxy(&key_cloned, socket);
+      }
+      process::exit(0);
+    }) {
+      println!("Set Ctrl-C handler failed: {}", e);
+      return;
+    }
+
     println!();
     println!(
       "cURL (Bash): for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
-      pub_addr, self.key
+      pub_addr, key
     );
     println!(
       "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\"  -T $f http://{}/{} }}",
-      pub_addr, self.key
+      pub_addr, key
     );
     println!(
       "cURL (CMD): FOR %f IN (f1, f2) DO curl -X POST -H \"File-Path: %f\" -T %f http://{}/{}",
-      pub_addr, self.key
+      pub_addr, key
     );
-    println!("Browser: http://{}/{}", pub_addr, self.key);
+    println!("Browser: http://{}/{}", pub_addr, key);
 
-    if let Some(proxy) = &self.proxy {
-      let mut master_buf_stream = BufStream::new(&proxy.master_stream);
-      loop {
-        let mut lines = vec![];
-        loop {
-          let mut line = String::new();
-          if let Err(e) = master_buf_stream.read_line(&mut line) {
-            println!("Read data from proxy master failed: {}", e);
-            break;
-          }
-          if line == "\r\n" {
-            break;
-          }
-          lines.push(line);
-        }
-        if lines.is_empty() {
-          println!("Empty data from proxy master");
-          continue;
-        }
-        if lines[0].trim() == "REQUEST" {
-          let mut stream = match TcpStream::connect(proxy.master_stream.peer_addr().unwrap()) {
-            Ok(stream) => stream,
-            Err(e) => {
-              println!("Connect to proxy master failed: {}", e);
-              continue;
-            }
-          };
-          if let Err(e) = stream
-            .write_all(format!("SEND {}\r\n\r\n", self.key).as_bytes())
-            .and_then(|_| stream.flush())
-          {
-            println!("Write to master stream failed: {}", e);
-            continue;
-          }
-          let key = self.key.clone();
-          let reserve = self.reserve;
-          thread::spawn(move || Self::handle_recv(stream, key, reserve));
-        }
+    if let Some(proxy) = proxy {
+      let proxy_master_socket = proxy.master_stream.peer_addr().unwrap();
+      for stream in ProxyMaster::get_transport_stream(key.clone(), proxy.master_stream) {
+        let key = key.clone();
+        thread::spawn(move || Self::handle_recv(stream, key, reserve));
       }
+      ProxyMaster::end_proxy(&key, proxy_master_socket);
     } else {
-      let listener = match TcpListener::bind(&self.socket) {
+      let listener = match TcpListener::bind(&socket) {
         Ok(listener) => listener,
         Err(e) => {
-          println!("Bind TCP socket to {} failed: {}", self.socket, e);
+          println!("Bind TCP socket to {} failed: {}", socket, e);
           return;
         }
       };
       for stream in listener.incoming() {
         match stream {
           Ok(stream) => {
-            let key = self.key.clone();
-            let reserve = self.reserve;
+            let key = key.clone();
             thread::spawn(move || Self::handle_recv(stream, key, reserve));
           }
           Err(e) => {

@@ -1,38 +1,31 @@
 use std::{
   fs::{self, File},
-  io::{BufRead, BufReader, Read, Write},
+  io::{BufRead, BufReader, ErrorKind, Read, Write},
   net::{SocketAddr, TcpListener, TcpStream},
   path::{Path, PathBuf},
   process,
   sync::Mutex,
   thread,
+  time::Duration,
 };
 
 use bufstream::BufStream;
 use mime_guess;
 use tar::Builder;
 
-use crate::proxy::ProxyConsumer;
+use crate::proxy::{ProxyConsumer, ProxyMaster};
 
 static FILE_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
 
-pub struct Send {
-  key: String,
-  socket: SocketAddr,
-  proxy: Option<ProxyConsumer>,
-}
+pub struct Send {}
 
 impl Send {
-  pub fn new(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>, file_paths: Vec<PathBuf>) -> Self {
+  pub fn run(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>, file_paths: Vec<PathBuf>) {
     FILE_PATHS.lock().unwrap().clear();
     for file_path in file_paths {
       FILE_PATHS.lock().unwrap().push(file_path);
     }
-    Self { key, socket, proxy }
-  }
-
-  pub fn run(&self) {
-    self.send();
+    Self::send(key, socket, proxy);
   }
 
   fn is_archive() -> bool {
@@ -111,15 +104,27 @@ impl Send {
         .and_then(|_| buf_stream.flush())
       {
         println!("Write response header failed: {}", e);
-        return;
       }
       return;
     }
 
     println!("\nSending {:?} to {}", file_path, peer_addr);
-    let file = File::open(&file_path).expect("Open sending file failed");
-    let mut file_reader = BufReader::new(&file);
-    let file_size = file.metadata().expect("Get file size metadata failed").len();
+    let (file_size, mut file_reader) = match File::open(&file_path) {
+      Ok(file) => (
+        match file.metadata() {
+          Ok(metadata) => metadata.len(),
+          Err(e) => {
+            println!("Get file metadata failed: {}", e);
+            return;
+          }
+        },
+        BufReader::new(file),
+      ),
+      Err(e) => {
+        println!("Open file {:?} failed: {}", file_path, e);
+        return;
+      }
+    };
 
     if let Err(e) = buf_stream
       .write_all(
@@ -160,18 +165,31 @@ impl Send {
       return;
     }
 
-    let mut buf = vec![];
-    if let Err(e) = buf_stream.read_to_end(&mut buf) {
-      println!("Read data from stream failed: {}", e);
+    let mut stream = match buf_stream.into_inner() {
+      Ok(stream) => stream,
+      Err(e) => {
+        println!("Get stream from buffer failed: {}", e);
+        return;
+      }
+    };
+    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
+      println!("Set read timeout failed: {}", e);
       return;
+    }
+    let mut buf = vec![];
+    if let Err(e) = stream.read_to_end(&mut buf) {
+      if e.kind() != ErrorKind::WouldBlock {
+        println!("Read data from stream failed: {}", e);
+        return;
+      }
     }
     println!("Send {:?} to {} done", file_path, peer_addr);
   }
 
-  fn send(&self) {
+  fn send(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>) {
     let is_archive = Self::is_archive();
     let file_path = if is_archive {
-      let file_path = Self::get_tar_path(&self.key);
+      let file_path = Self::get_tar_path(&key);
       if !file_path.is_file() {
         Self::tar(&file_path);
       }
@@ -182,10 +200,20 @@ impl Send {
     let file_name = file_path.file_name().unwrap().to_str().unwrap().to_string();
     let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream().to_string();
 
+    let (pub_addr, proxy_master_socket) = if let Some(proxy) = &proxy {
+      (proxy.public_socket, Some(proxy.master_stream.peer_addr().unwrap()))
+    } else {
+      (socket, None)
+    };
+
     let tar_path = file_path.clone();
+    let key_cloned = key.clone();
     if let Err(e) = ctrlc::set_handler(move || {
       if is_archive && tar_path.is_file() {
         fs::remove_file(&tar_path).expect("Remove tar file failed");
+      }
+      if let Some(socket) = proxy_master_socket {
+        ProxyMaster::end_proxy(&key_cloned, socket);
       }
       process::exit(0);
     }) {
@@ -193,78 +221,42 @@ impl Send {
       return;
     }
 
-    let pub_addr = if let Some(proxy) = &self.proxy {
-      proxy.public_socket
-    } else {
-      self.socket
-    };
     println!();
     if is_archive {
-      println!("cURL: curl http://{}/{} | tar xvf -", pub_addr, self.key);
-      println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, self.key);
-      println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", pub_addr, self.key);
+      println!("cURL: curl http://{}/{} | tar xvf -", pub_addr, key);
+      println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, key);
+      println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", pub_addr, key);
     } else {
-      println!("cURL: curl -o {} http://{}/{}", file_name, pub_addr, self.key);
-      println!("Wget: wget -O {} http://{}/{}", file_name, pub_addr, self.key);
-      println!("PowerShell: iwr -O {} http://{}/{}", file_name, pub_addr, self.key);
+      println!("cURL: curl -o {} http://{}/{}", file_name, pub_addr, key);
+      println!("Wget: wget -O {} http://{}/{}", file_name, pub_addr, key);
+      println!("PowerShell: iwr -O {} http://{}/{}", file_name, pub_addr, key);
     }
-    println!("Browser: http://{}/{}", pub_addr, self.key);
+    println!("Browser: http://{}/{}", pub_addr, key);
 
-    if let Some(proxy) = &self.proxy {
-      let mut master_buf_stream = BufStream::new(&proxy.master_stream);
-      loop {
-        let mut lines = vec![];
-        loop {
-          let mut line = String::new();
-          if let Err(e) = master_buf_stream.read_line(&mut line) {
-            println!("Read data from proxy master failed: {}", e);
-            return;
-          }
-          if line == "\r\n" {
-            break;
-          }
-          lines.push(line);
-        }
-        if lines.is_empty() {
-          println!("Empty data from proxy master");
-          continue;
-        }
-        if lines[0].trim() == "REQUEST" {
-          let mut stream = match TcpStream::connect(proxy.master_stream.peer_addr().unwrap()) {
-            Ok(stream) => stream,
-            Err(e) => {
-              println!("Connect to proxy master failed: {}", e);
-              continue;
-            }
-          };
-          if let Err(e) = stream
-            .write_all(format!("SEND {}\r\n\r\n", self.key).as_bytes())
-            .and_then(|_| stream.flush())
-          {
-            println!("Write to master stream failed: {}", e);
-            continue;
-          }
-          let key = self.key.clone();
-          let file_path = file_path.clone();
-          let file_name = file_name.clone();
-          let mime_type = mime_type.clone();
-          thread::spawn(move || {
-            Self::handle_send(stream, key, file_path, file_name, is_archive, mime_type);
-          });
-        }
+    if let Some(proxy) = proxy {
+      let proxy_master_socket = proxy.master_stream.peer_addr().unwrap();
+      for stream in ProxyMaster::get_transport_stream(key.clone(), proxy.master_stream) {
+        let key = key.clone();
+        let file_path = file_path.clone();
+        let file_name = file_name.clone();
+        let mime_type = mime_type.clone();
+        thread::spawn(move || {
+          Self::handle_send(stream, key, file_path, file_name, is_archive, mime_type);
+        });
       }
+      ProxyMaster::end_proxy(&key, proxy_master_socket);
     } else {
-      let listener = match TcpListener::bind(&self.socket) {
+      let listener = match TcpListener::bind(socket) {
         Ok(listener) => listener,
         Err(e) => {
-          println!("Bind TCP socket to {} failed: {}", self.socket, e);
+          println!("Bind TCP socket to {} failed: {}", socket, e);
           return;
         }
       };
       for stream in listener.incoming() {
         match stream {
           Ok(stream) => {
-            let key = self.key.clone();
+            let key = key.clone();
             let file_path = file_path.clone();
             let file_name = file_name.clone();
             let mime_type = mime_type.clone();
