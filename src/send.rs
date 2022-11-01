@@ -1,12 +1,11 @@
 use std::{
   fs::{self, File},
-  io::{BufRead, BufReader, ErrorKind, Read, Write},
+  io::{BufRead, BufReader, Read, Write},
   net::{SocketAddr, TcpListener, TcpStream},
   path::{Path, PathBuf},
   process,
   sync::Mutex,
   thread,
-  time::Duration,
 };
 
 use bufstream::BufStream;
@@ -148,7 +147,7 @@ impl Send {
     while left_size > 0 {
       match file_reader.read(&mut buf) {
         Ok(n) => {
-          if let Err(e) = buf_stream.write_all(&buf[0..n]) {
+          if let Err(e) = buf_stream.write_all(&buf[..n]) {
             println!("Write response content failed: {}", e);
             return;
           }
@@ -163,25 +162,6 @@ impl Send {
     if let Err(e) = buf_stream.flush() {
       println!("Flush stream failed: {}", e);
       return;
-    }
-
-    let mut stream = match buf_stream.into_inner() {
-      Ok(stream) => stream,
-      Err(e) => {
-        println!("Get stream from buffer failed: {}", e);
-        return;
-      }
-    };
-    if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(5))) {
-      println!("Set read timeout failed: {}", e);
-      return;
-    }
-    let mut buf = vec![];
-    if let Err(e) = stream.read_to_end(&mut buf) {
-      if e.kind() != ErrorKind::WouldBlock {
-        println!("Read data from stream failed: {}", e);
-        return;
-      }
     }
     println!("Send {:?} to {} done", file_path, peer_addr);
   }

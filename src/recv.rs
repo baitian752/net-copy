@@ -187,7 +187,7 @@ impl Recv {
     while left_size > 0 {
       match buf_stream.read(&mut buf) {
         Ok(n) => {
-          if let Err(e) = file_writer.write_all(&buf[0..n]) {
+          if let Err(e) = file_writer.write_all(&buf[..n]) {
             println!("Write to output file failed: {}", e);
             return;
           }

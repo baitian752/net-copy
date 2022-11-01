@@ -400,7 +400,7 @@ impl ProxyListener {
       while left_size > 0 {
         match reader.read(&mut buf) {
           Ok(n) => {
-            if let Err(e) = writer.write_all(&buf[0..n]) {
+            if let Err(e) = writer.write_all(&buf[..n]) {
               println!("Write to stream failed: {}", e);
               return;
             }
