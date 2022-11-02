@@ -207,9 +207,9 @@ impl Send {
       println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, key);
       println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", pub_addr, key);
     } else {
-      println!("cURL: curl -o {} http://{}/{}", file_name, pub_addr, key);
-      println!("Wget: wget -O {} http://{}/{}", file_name, pub_addr, key);
-      println!("PowerShell: iwr -O {} http://{}/{}", file_name, pub_addr, key);
+      println!("cURL: curl -o \"{}\" http://{}/{}", file_name, pub_addr, key);
+      println!("Wget: wget -O \"{}\" http://{}/{}", file_name, pub_addr, key);
+      println!("PowerShell: iwr -O \"{}\" http://{}/{}", file_name, pub_addr, key);
     }
     println!("Browser: http://{}/{}", pub_addr, key);
 
