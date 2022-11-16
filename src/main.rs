@@ -1,8 +1,10 @@
 use std::{
+  alloc,
   net::{IpAddr, SocketAddr},
   str::FromStr,
 };
 
+use cap::Cap;
 use clap::Parser;
 use portpicker::pick_unused_port;
 use rand::distributions::{Alphanumeric, DistString};
@@ -15,7 +17,13 @@ use net_copy::{
   send::Send,
 };
 
+#[global_allocator]
+static ALLOCATOR: Cap<alloc::System> = Cap::new(alloc::System, usize::max_value());
+
 fn main() {
+  // Set the memory limit to 1GiB.
+  ALLOCATOR.set_limit(1 * 1024 * 1024 * 1024).unwrap();
+
   let cli = Cli::parse();
 
   let mut promt_save_config = true;

@@ -32,6 +32,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40e38929add23cdf8a366df9b0e088953150724bcbe5fc330b0d8eb3b328eec8"
 
 [[package]]
+name = "cap"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42cf69039bc11cbca6ec9076caa0147dc68b267a6eb6b2b3f7ccf97e986d3f01"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -226,9 +232,10 @@ dependencies = [
 
 [[package]]
 name = "net-copy"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bufstream",
+ "cap",
  "clap",
  "ctrlc",
  "default-net",

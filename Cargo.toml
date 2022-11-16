@@ -7,7 +7,7 @@ homepage = "https://github.com/baitian752/net-copy"
 license = "MIT"
 name = "net-copy"
 repository = "https://github.com/baitian752/net-copy"
-version = "0.1.1"
+version = "0.1.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 bufstream = "0.1"
+cap = "0.1"
 clap = { version = "4.0", features = ["derive"] }
 ctrlc = "3.2"
 default-net = "0.11"
