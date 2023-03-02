@@ -9,6 +9,7 @@ use std::{
   thread,
 };
 
+use base64::{engine::general_purpose, Engine as _};
 use bufstream::BufStream;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
@@ -249,10 +250,15 @@ impl Recv {
     }
 
     println!();
-    println!(
-      "cURL (Bash): for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
+    let default_cmd = format!(
+      "for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
       pub_addr, key
     );
+    print!(
+      "\x1B]52;c;{}\x07",
+      general_purpose::STANDARD_NO_PAD.encode(&default_cmd)
+    );
+    println!("cURL (Bash): {}", default_cmd);
     println!(
       "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\" -T $f http://{}/{} }}",
       pub_addr, key
