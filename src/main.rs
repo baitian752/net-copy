@@ -1,10 +1,8 @@
 use std::{
-  alloc,
   net::{IpAddr, SocketAddr},
   str::FromStr,
 };
 
-use cap::Cap;
 use clap::Parser;
 use portpicker::pick_unused_port;
 use rand::distributions::{Alphanumeric, DistString};
@@ -17,16 +15,10 @@ use net_copy::{
   send::Send,
 };
 
-#[global_allocator]
-static ALLOCATOR: Cap<alloc::System> = Cap::new(alloc::System, usize::max_value());
-
 fn main() {
-  // Set the memory limit to 1GiB.
-  ALLOCATOR.set_limit(1 * 1024 * 1024 * 1024).unwrap();
-
   let cli = Cli::parse();
 
-  let mut promt_save_config = true;
+  let mut prompt_save_config = true;
   let mut config = Config::new(&cli);
   if config.host.is_none() {
     let interfaces = default_net::get_interfaces();
@@ -40,7 +32,7 @@ fn main() {
       println!("Cannot find any valid network interface");
       return;
     } else if interfaces.len() == 1 {
-      promt_save_config = false;
+      prompt_save_config = false;
       interfaces[0].ipv4[0].addr
     } else {
       for (i, interface) in interfaces.iter().enumerate() {
@@ -75,12 +67,12 @@ fn main() {
     };
     config.host = Some(IpAddr::V4(ip_addr));
   }
-  if promt_save_config {
+  if prompt_save_config {
     config.save();
   }
 
   let mode = config.mode.unwrap_or(Mode::Normal);
-  let key = &config
+  let key = config
     .key
     .unwrap_or_else(|| Alphanumeric.sample_string(&mut rand::thread_rng(), 6));
   let socket = SocketAddr::from_str(&format!(
@@ -101,15 +93,21 @@ fn main() {
   let proxy = if config.no_proxy {
     None
   } else {
-    ProxyConsumer::try_get(&proxy_servers, key)
+    ProxyConsumer::try_get(&proxy_servers, &key)
   };
+
+  cli.files.iter().for_each(|file| {
+    if !file.exists() {
+      panic!("File not found: {}", file.display());
+    }
+  });
 
   match mode {
     Mode::Normal => {
       if cli.files.is_empty() {
-        Recv::run(key.clone(), socket, reserve, proxy);
+        Recv::run(&key, socket, reserve, proxy);
       } else {
-        Send::run(key.clone(), socket, proxy, cli.files);
+        Send::run(&key, socket, proxy, cli.files);
       }
     }
     Mode::Proxy => {

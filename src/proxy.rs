@@ -66,29 +66,32 @@ impl ProxyMaster {
   fn proxy_handle(&mut self, stream: TcpStream) {
     let target_socket = match stream.peer_addr() {
       Ok(socket) => socket,
-      Err(_) => {
-        println!("Get target socket failed");
+      Err(e) => {
+        println!("Get peer socket failed: {}", e);
         return;
       }
     };
     let mut buf_stream = BufStream::new(stream);
-    let mut lines = vec![];
-    loop {
-      let mut line = String::new();
-      if let Err(e) = buf_stream.read_line(&mut line) {
-        println!("Read from {} failed: {}", target_socket, e);
-        break;
-      }
-      if line == "\r\n" {
-        break;
-      }
-      lines.push(line);
-    }
-    if lines.is_empty() {
-      println!("Empty request from {}", target_socket);
+    let mut request = String::new();
+    if let Err(e) = buf_stream.read_line(&mut request) {
+      println!("Read from {} failed: {}", target_socket, e);
       return;
     }
-    let chunks: Vec<_> = lines[0].split_whitespace().collect();
+    let mut line = String::new();
+    match buf_stream.read_line(&mut line) {
+      Ok(_) => {
+        if line != "\r\n" {
+          println!("Bad request from {}", target_socket);
+          return;
+        }
+      }
+      Err(e) => {
+        println!("Read from {} failed: {}", target_socket, e);
+        return;
+      }
+    }
+
+    let chunks: Vec<_> = request.split_whitespace().collect();
     if chunks.is_empty() {
       println!("Bad request from {}", target_socket);
       return;
@@ -185,27 +188,31 @@ impl ProxyMaster {
     }
   }
 
-  pub fn get_transport_stream(key: String, master_stream: TcpStream) -> impl iter::Iterator<Item = TcpStream> {
+  pub fn get_transport_stream(key: &str, master_stream: TcpStream) -> impl iter::Iterator<Item = TcpStream> {
     let master_socket = master_stream.peer_addr().unwrap();
     let mut master_buf_stream = BufStream::new(master_stream);
+    let key = key.to_string();
     iter::from_fn(move || {
-      let mut lines = vec![];
-      loop {
-        let mut line = String::new();
-        if let Err(e) = master_buf_stream.read_line(&mut line) {
-          println!("Read data from proxy master failed: {}", e);
-          return None;
-        }
-        if line == "\r\n" {
-          break;
-        }
-        lines.push(line);
-      }
-      if lines.is_empty() {
-        println!("Empty data from proxy master");
+      let mut request = String::new();
+      if let Err(e) = master_buf_stream.read_line(&mut request) {
+        println!("Read from {} failed: {}", master_socket, e);
         return None;
       }
-      if lines[0].trim() == "REQUEST" {
+      let mut line = String::new();
+      match master_buf_stream.read_line(&mut line) {
+        Ok(_) => {
+          if line != "\r\n" {
+            println!("Bad request from {}", master_socket);
+            return None;
+          }
+        }
+        Err(e) => {
+          println!("Read from {} failed: {}", master_socket, e);
+          return None;
+        }
+      }
+
+      if request.trim() == "REQUEST" {
         let mut stream = match TcpStream::connect(master_socket) {
           Ok(stream) => stream,
           Err(e) => {
@@ -272,8 +279,8 @@ impl ProxyListener {
   fn proxy_handle(&self, stream: TcpStream) {
     let target_socket = match stream.peer_addr() {
       Ok(socket) => socket,
-      Err(_) => {
-        println!("Get target socket failed");
+      Err(e) => {
+        println!("Get peer addr failed: {}", e);
         return;
       }
     };
@@ -302,7 +309,7 @@ impl ProxyListener {
       }
       if content_length.is_none() && request_method.as_ref().unwrap() == "POST" && line.starts_with("Content-Length:") {
         content_length = match line.trim().split(':').take(2).last() {
-          Some(value) => match value.trim().parse::<u64>() {
+          Some(value) => match value.trim().parse::<usize>() {
             Ok(v) => Some(v),
             Err(e) => {
               println!("Parse content length from header failed: {}", e);
@@ -316,6 +323,10 @@ impl ProxyListener {
         }
       }
       headers.push(line);
+      if headers.len() > 100 {
+        println!("Too many headers from {}", target_socket);
+        return;
+      }
     }
     let request_method = request_method.unwrap();
     let key = key.unwrap();
@@ -363,7 +374,7 @@ impl ProxyListener {
         }
         if content_length.is_none() && request_method == "GET" && line.starts_with("Content-Length:") {
           content_length = match line.trim().split(':').take(2).last() {
-            Some(value) => match value.trim().parse::<u64>() {
+            Some(value) => match value.trim().parse::<usize>() {
               Ok(v) => Some(v),
               Err(e) => {
                 println!("Parse content length from header failed: {}", e);
@@ -377,6 +388,10 @@ impl ProxyListener {
           }
         }
         headers.push(line);
+        if headers.len() > 100 {
+          println!("Too many headers from {}", underlying_socket);
+          return;
+        }
       }
       let content_length = content_length.unwrap();
       for header in &headers {
@@ -397,6 +412,7 @@ impl ProxyListener {
       };
       let mut left_size = content_length;
       let mut buf = [0u8; 16 * 1024];
+      let mut send_size = 0;
       while left_size > 0 {
         match reader.read(&mut buf) {
           Ok(n) => {
@@ -404,7 +420,15 @@ impl ProxyListener {
               println!("Write to stream failed: {}", e);
               return;
             }
-            left_size -= n as u64;
+            left_size -= n;
+            send_size += n;
+            if send_size >= 16 * 1024 * 1024 {
+              if let Err(e) = writer.flush() {
+                println!("Flush writer failed: {}", e);
+                return;
+              }
+              send_size = 0;
+            }
           }
           Err(_) => {
             println!("Read from stream failed");
@@ -477,23 +501,26 @@ impl ProxyConsumer {
             println!("Writer to proxy failed: {}", e);
             continue;
           }
-          let mut lines = vec![];
-          loop {
-            let mut line = String::new();
-            if let Err(e) = buf_stream.read_line(&mut line) {
-              println!("Read data from proxy master failed: {}", e);
-              break;
-            }
-            if line == "\r\n" {
-              break;
-            }
-            lines.push(line);
-          }
-          if lines.len() != 1 {
-            println!("Wrong response from proxy master");
+          let mut request = String::new();
+          if let Err(e) = buf_stream.read_line(&mut request) {
+            println!("Read data from proxy master failed: {}", e);
             continue;
           }
-          match SocketAddr::from_str(lines[0].trim()) {
+          let mut line = String::new();
+          match buf_stream.read_line(&mut line) {
+            Ok(_) => {
+              if line != "\r\n" {
+                println!("Bad request from proxy master");
+                continue;
+              }
+            }
+            Err(e) => {
+              println!("Read data from proxy master failed: {}", e);
+              continue;
+            }
+          }
+
+          match SocketAddr::from_str(request.trim()) {
             Ok(socket) => {
               let stream = buf_stream.into_inner().unwrap();
               if let Err(e) = stream.set_read_timeout(None) {
@@ -533,23 +560,25 @@ impl ProxyConsumer {
             println!("Write to proxy master failed: {}", e);
             continue;
           }
-          let mut lines = vec![];
-          loop {
-            let mut line = String::new();
-            if let Err(e) = buf_stream.read_line(&mut line) {
-              println!("Read data from proxy master failed: {}", e);
-              break;
-            }
-            if line == "\r\n" {
-              break;
-            }
-            lines.push(line);
-          }
-          if lines.len() != 1 {
-            println!("Wrong response from proxy master");
+          let mut request = String::new();
+          if let Err(e) = buf_stream.read_line(&mut request) {
+            println!("Read data from proxy master failed: {}", e);
             continue;
           }
-          if lines[0].trim() == "PONG" {
+          let mut line = String::new();
+          match buf_stream.read_line(&mut line) {
+            Ok(_) => {
+              if line != "\r\n" {
+                println!("Bad request from proxy master");
+                continue;
+              }
+            }
+            Err(e) => {
+              println!("Read data from proxy master failed: {}", e);
+              continue;
+            }
+          }
+          if request.trim() == "PONG" {
             return None;
           } else {
             continue;

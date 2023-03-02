@@ -19,12 +19,12 @@ static FILE_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
 pub struct Send {}
 
 impl Send {
-  pub fn run(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>, file_paths: Vec<PathBuf>) {
+  pub fn run(key: &str, socket: SocketAddr, proxy: Option<ProxyConsumer>, file_paths: Vec<PathBuf>) {
     FILE_PATHS.lock().unwrap().clear();
     for file_path in file_paths {
       FILE_PATHS.lock().unwrap().push(file_path);
     }
-    Self::send(key, socket, proxy);
+    Self::send(&key, socket, proxy);
   }
 
   fn is_archive() -> bool {
@@ -66,7 +66,7 @@ impl Send {
   }
 
   fn handle_send(
-    stream: TcpStream, key: String, file_path: PathBuf, file_name: String, is_archive: bool, mime_type: String,
+    stream: TcpStream, key: &str, file_path: PathBuf, file_name: String, is_archive: bool, mime_type: String,
   ) {
     if is_archive && !file_path.is_file() && !Self::tar(&file_path) {
       println!("Archive sending files failed");
@@ -91,6 +91,10 @@ impl Send {
         break;
       }
       headers.push(line);
+      if headers.len() > 100 {
+        println!("Too many request headers from {}", peer_addr);
+        return;
+      }
     }
     if headers.is_empty() {
       println!("Empty request headers from {}", peer_addr);
@@ -111,7 +115,7 @@ impl Send {
     let (file_size, mut file_reader) = match File::open(&file_path) {
       Ok(file) => (
         match file.metadata() {
-          Ok(metadata) => metadata.len(),
+          Ok(metadata) => metadata.len() as usize,
           Err(e) => {
             println!("Get file metadata failed: {}", e);
             return;
@@ -144,6 +148,7 @@ impl Send {
 
     let mut buf = vec![0u8; 16 * 1024];
     let mut left_size = file_size;
+    let mut send_size = 0;
     while left_size > 0 {
       match file_reader.read(&mut buf) {
         Ok(n) => {
@@ -151,7 +156,15 @@ impl Send {
             println!("Write response content failed: {}", e);
             return;
           }
-          left_size -= n as u64;
+          left_size -= n;
+          send_size += n;
+          if send_size >= 16 * 1024 * 1024 {
+            if let Err(e) = buf_stream.flush() {
+              println!("Flush writer failed: {}", e);
+              return;
+            }
+            send_size = 0;
+          }
         }
         Err(e) => {
           println!("Read sending file failed: {}", e);
@@ -166,10 +179,10 @@ impl Send {
     println!("Send {:?} to {} done", file_path, peer_addr);
   }
 
-  fn send(key: String, socket: SocketAddr, proxy: Option<ProxyConsumer>) {
+  fn send(key: &str, socket: SocketAddr, proxy: Option<ProxyConsumer>) {
     let is_archive = Self::is_archive();
     let file_path = if is_archive {
-      let file_path = Self::get_tar_path(&key);
+      let file_path = Self::get_tar_path(key);
       if !file_path.is_file() {
         Self::tar(&file_path);
       }
@@ -187,13 +200,13 @@ impl Send {
     };
 
     let tar_path = file_path.clone();
-    let key_cloned = key.clone();
+    let key_cloned = key.to_string();
     if let Err(e) = ctrlc::set_handler(move || {
-      if is_archive && tar_path.is_file() {
-        fs::remove_file(&tar_path).expect("Remove tar file failed");
-      }
       if let Some(socket) = proxy_master_socket {
         ProxyMaster::end_proxy(&key_cloned, socket);
+      }
+      if is_archive && tar_path.is_file() {
+        fs::remove_file(&tar_path).expect("Remove tar file failed");
       }
       process::exit(0);
     }) {
@@ -205,23 +218,20 @@ impl Send {
     if is_archive {
       println!("cURL: curl http://{}/{} | tar xvf -", pub_addr, key);
       println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, key);
-      println!("PowerShell: cmd /C 'curl http://{}/{} | tar xvf -'", pub_addr, key);
     } else {
       println!("cURL: curl -o \"{}\" http://{}/{}", file_name, pub_addr, key);
       println!("Wget: wget -O \"{}\" http://{}/{}", file_name, pub_addr, key);
-      println!("PowerShell: iwr -O \"{}\" http://{}/{}", file_name, pub_addr, key);
     }
-    println!("Browser: http://{}/{}", pub_addr, key);
 
     if let Some(proxy) = proxy {
       let proxy_master_socket = proxy.master_stream.peer_addr().unwrap();
-      for stream in ProxyMaster::get_transport_stream(key.clone(), proxy.master_stream) {
-        let key = key.clone();
+      for stream in ProxyMaster::get_transport_stream(key, proxy.master_stream) {
+        let key = key.to_string();
         let file_path = file_path.clone();
         let file_name = file_name.clone();
         let mime_type = mime_type.clone();
         thread::spawn(move || {
-          Self::handle_send(stream, key, file_path, file_name, is_archive, mime_type);
+          Self::handle_send(stream, &key, file_path, file_name, is_archive, mime_type);
         });
       }
       ProxyMaster::end_proxy(&key, proxy_master_socket);
@@ -236,12 +246,12 @@ impl Send {
       for stream in listener.incoming() {
         match stream {
           Ok(stream) => {
-            let key = key.clone();
+            let key = key.to_string();
             let file_path = file_path.clone();
             let file_name = file_name.clone();
             let mime_type = mime_type.clone();
             thread::spawn(move || {
-              Self::handle_send(stream, key, file_path, file_name, is_archive, mime_type);
+              Self::handle_send(stream, &key, file_path, file_name, is_archive, mime_type);
             });
           }
           Err(e) => {
