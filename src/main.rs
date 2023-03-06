@@ -25,7 +25,16 @@ fn main() {
     let interfaces: Vec<_> = interfaces
       .iter()
       .filter(|interface| {
-        interface.if_type == default_net::interface::InterfaceType::Ethernet && !interface.ipv4.is_empty()
+        if interface.ipv4.len() == 1 {
+          let addr = interface.ipv4[0].addr;
+          if addr.is_loopback() || addr.is_unspecified() {
+            false
+          } else {
+            true
+          }
+        } else {
+          false
+        }
       })
       .collect();
     let ip_addr = if interfaces.is_empty() {

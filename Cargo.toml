@@ -7,7 +7,7 @@ homepage = "https://github.com/baitian752/net-copy"
 license = "MIT"
 name = "net-copy"
 repository = "https://github.com/baitian752/net-copy"
-version = "0.2.0"
+version = "0.2.1"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
