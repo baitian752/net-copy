@@ -489,7 +489,7 @@ impl ProxyConsumer {
     for addr in &addrs {
       match TcpStream::connect_timeout(addr, Duration::from_millis(200)) {
         Ok(stream) => {
-          if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(200))) {
+          if let Err(e) = stream.set_read_timeout(Some(Duration::from_millis(500))) {
             println!("Set read timeout for stream failed: {}", e);
             continue;
           }

@@ -7,7 +7,7 @@ homepage = "https://github.com/baitian752/net-copy"
 license = "MIT"
 name = "net-copy"
 repository = "https://github.com/baitian752/net-copy"
-version = "0.2.1"
+version = "0.2.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -20,7 +20,7 @@ base64 = "0.21"
 bufstream = "0.1"
 clap = { version = "4.1", features = ["derive"] }
 ctrlc = "3.2"
-default-net = "0.12"
+default-net = "0.14"
 home = "0.5"
 indicatif = "0.17"
 mime_guess = "2.0"
