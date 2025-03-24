@@ -1,0 +1,42 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"command": "cross",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cross build",
+			"args": [
+				"build",
+				"--release",
+				"--target",
+				"${input:build-target}"
+			]
+		},
+		{
+			"label": "install",
+			"type": "shell",
+			"command": "cp",
+			"args": [
+				"target/x86_64-unknown-linux-musl/release/ncp",
+				"/usr/local/bin/ncp",
+			]
+		}
+	],
+	"inputs": [
+		{
+			"id": "build-target",
+			"type": "pickString",
+			"description": "The build target for cross",
+			"default": "x86_64-unknown-linux-musl",
+			"options": [
+				"x86_64-unknown-linux-musl",
+				"aarch64-unknown-linux-musl",
+				"aarch64-linux-android"
+			]
+		}
+	]
+}

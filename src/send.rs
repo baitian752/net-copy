@@ -221,7 +221,7 @@ impl Send {
       default_cmd = format!("curl http://{}/{} | tar xvf -", pub_addr, key);
       print!(
         "\x1B]52;c;{}\x07",
-        general_purpose::STANDARD_NO_PAD.encode(&default_cmd)
+        general_purpose::STANDARD.encode(&default_cmd)
       );
       println!("cURL: {}", default_cmd);
       println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, key);
@@ -229,7 +229,7 @@ impl Send {
       default_cmd = format!("curl -o \"{}\" http://{}/{}", file_name, pub_addr, key);
       print!(
         "\x1B]52;c;{}\x07",
-        general_purpose::STANDARD_NO_PAD.encode(&default_cmd)
+        general_purpose::STANDARD.encode(&default_cmd)
       );
       println!("cURL: {}", default_cmd);
       println!("Wget: wget -O \"{}\" http://{}/{}", file_name, pub_addr, key);

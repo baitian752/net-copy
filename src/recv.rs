@@ -20,8 +20,8 @@ static UPLOAD_HTML: &[u8] = include_bytes!("html/upload.html");
 pub struct Recv {}
 
 impl Recv {
-  pub fn run(key: &str, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>) {
-    Self::recv(key, socket, reserve, proxy);
+  pub fn run(key: &str, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>, auto_rename: bool) {
+    Self::recv(key, socket, reserve, proxy, auto_rename);
   }
 
   fn to_os_path(path: &str, reserve: bool) -> PathBuf {
@@ -43,7 +43,7 @@ impl Recv {
     }
   }
 
-  fn handle_recv(stream: TcpStream, key: &str, reserve: bool) {
+  fn handle_recv(stream: TcpStream, key: &str, reserve: bool, auto_rename: bool) {
     let peer_addr = match stream.peer_addr() {
       Ok(peer_addr) => peer_addr,
       Err(e) => {
@@ -147,29 +147,32 @@ impl Recv {
       }
     }
     let content_length = content_length.unwrap();
-    let file_path = file_path.unwrap();
-    // if file_path.is_file() {
-    //   let mut extension = String::new();
-    //   if let Some(ex) = file_path.extension() {
-    //     extension.push_str(ex.to_str().unwrap());
-    //     extension.push('-');
-    //   }
-    //   extension.push_str(&key);
-    //   let mut bak_path = file_path.clone();
-    //   bak_path.set_extension(&extension);
-    //   let mut i = 0;
-    //   while bak_path.is_file() {
-    //     bak_path.set_extension(format!("{}-{}", extension, i));
-    //     i += 1;
-    //   }
-    //   if let Err(e) = fs::rename(&file_path, &bak_path) {
-    //     println!("Move {:?} to {:?} failed: {}", file_path, bak_path, e);
-    //     return;
-    //   }
-    //   println!("{:?} exists, moved to {:?}", file_path, bak_path);
-    // }
+    let mut file_path = file_path.unwrap();
+    if auto_rename && file_path.is_file() {
+      let mut new_path = file_path.clone();
+      let mut i = 1;
+      while new_path.is_file() {
+        if file_path.extension().is_none() {
+          new_path = file_path.with_file_name(format!("{}-{}", file_path.file_stem().unwrap().to_str().unwrap(), i));
+        } else {
+          new_path = file_path.with_file_name(format!(
+            "{}-{}.{}",
+            file_path.file_stem().unwrap().to_str().unwrap(),
+            i,
+            file_path.extension().unwrap().to_str().unwrap(),
+          ));
+        }
+        i += 1;
+      }
+      println!(
+        "\nRecving {:?} from {} (local path: {:?})",
+        &file_path, peer_addr, &new_path
+      );
+      file_path = new_path;
+    } else {
+      println!("\nRecving {:?} from {}", &file_path, peer_addr);
+    }
 
-    println!("\nRecving {:?} from {}", &file_path, peer_addr);
     let pb = ProgressBar::new(content_length as u64);
     pb.set_style(
       ProgressStyle::with_template("[{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -231,7 +234,7 @@ impl Recv {
     println!("Recv {:?} from {} done", file_path, peer_addr);
   }
 
-  fn recv(key: &str, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>) {
+  fn recv(key: &str, socket: SocketAddr, reserve: bool, proxy: Option<ProxyConsumer>, auto_rename: bool) {
     let (pub_addr, proxy_master_socket) = if let Some(proxy) = &proxy {
       (proxy.public_socket, Some(proxy.master_stream.peer_addr().unwrap()))
     } else {
@@ -254,10 +257,7 @@ impl Recv {
       "for f in <FILES>; do curl -X POST -H \"File-Path: $f\" -T $f http://{}/{}; done",
       pub_addr, key
     );
-    print!(
-      "\x1B]52;c;{}\x07",
-      general_purpose::STANDARD_NO_PAD.encode(&default_cmd)
-    );
+    print!("\x1B]52;c;{}\x07", general_purpose::STANDARD.encode(&default_cmd));
     println!("cURL (Bash): {}", default_cmd);
     println!(
       "cURL (PowerShell): foreach ($f in \"f1\", \"f2\") {{ curl -X POST -H \"File-Path: $f\" -T $f http://{}/{} }}",
@@ -272,7 +272,7 @@ impl Recv {
       let proxy_master_socket = proxy.master_stream.peer_addr().unwrap();
       for stream in ProxyMaster::get_transport_stream(&key, proxy.master_stream) {
         let key = key.to_string();
-        thread::spawn(move || Self::handle_recv(stream, &key, reserve));
+        thread::spawn(move || Self::handle_recv(stream, &key, reserve, auto_rename));
       }
       ProxyMaster::end_proxy(&key, proxy_master_socket);
     } else {
@@ -287,7 +287,7 @@ impl Recv {
         match stream {
           Ok(stream) => {
             let key = key.to_string();
-            thread::spawn(move || Self::handle_recv(stream, &key, reserve));
+            thread::spawn(move || Self::handle_recv(stream, &key, reserve, auto_rename));
           }
           Err(e) => {
             println!("Get incoming stream failed: {}", e);

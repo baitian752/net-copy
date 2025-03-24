@@ -27,6 +27,7 @@ pub struct Config {
   pub proxy: Option<Vec<IpAddr>>,
   pub no_proxy: bool,
   pub mode: Option<Mode>,
+  pub auto_rename: bool,
 }
 
 impl Config {
@@ -90,6 +91,10 @@ impl Config {
         Ok(x) => Some(Mode::from_str(&x, true).unwrap()),
         Err(_) => None,
       },
+      auto_rename: match env::var("NCP_AUTO_RENAME") {
+        Ok(x) => FromStr::from_str(&x).unwrap(),
+        Err(_) => false,
+      },
     }
   }
 
@@ -102,6 +107,7 @@ impl Config {
       proxy: cli.proxy.clone(),
       no_proxy: cli.no_proxy,
       mode: cli.mode.clone(),
+      auto_rename: cli.auto_rename,
     }
   }
 
@@ -126,6 +132,9 @@ impl Config {
     }
     if self.mode.is_none() {
       self.mode = config.mode.clone();
+    }
+    if !self.auto_rename {
+      self.auto_rename = config.auto_rename;
     }
     self
   }
@@ -168,6 +177,7 @@ impl Config {
               proxy = []\n\
               no_proxy = false\n\
               # mode = \"normal\"\n\
+              auto_rename = false\n\
               ",
             self.host.unwrap(),
           );

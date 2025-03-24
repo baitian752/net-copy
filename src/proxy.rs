@@ -544,6 +544,12 @@ impl ProxyConsumer {
   }
 
   pub fn try_get(proxy_servers: &[IpAddr], key: &str) -> Option<Self> {
+    for ip in proxy_servers {
+      if let Some(proxy) = Self::try_get_one(*ip, key) {
+        return Some(proxy);
+      }
+    }
+
     let addrs = [
       SocketAddr::from(([127, 0, 0, 1], 7070)),
       SocketAddr::from(([127, 0, 0, 1], 7575)),
@@ -585,12 +591,6 @@ impl ProxyConsumer {
           }
         }
         Err(_) => continue,
-      }
-    }
-
-    for ip in proxy_servers {
-      if let Some(proxy) = Self::try_get_one(*ip, key) {
-        return Some(proxy);
       }
     }
 

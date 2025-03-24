@@ -114,7 +114,7 @@ fn main() {
   match mode {
     Mode::Normal => {
       if cli.files.is_empty() {
-        Recv::run(&key, socket, reserve, proxy);
+        Recv::run(&key, socket, reserve, proxy, config.auto_rename);
       } else {
         Send::run(&key, socket, proxy, cli.files);
       }
