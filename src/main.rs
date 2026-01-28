@@ -5,7 +5,7 @@ use std::{
 
 use clap::Parser;
 use portpicker::pick_unused_port;
-use rand::distributions::{Alphanumeric, DistString};
+use rand::distr::{Alphanumeric, SampleString};
 
 use net_copy::{
   cli::Cli,
@@ -83,7 +83,7 @@ fn main() {
   let mode = config.mode.unwrap_or(Mode::Normal);
   let key = config
     .key
-    .unwrap_or_else(|| Alphanumeric.sample_string(&mut rand::thread_rng(), 6));
+    .unwrap_or_else(|| Alphanumeric.sample_string(&mut rand::rng(), 6));
   let socket = SocketAddr::from_str(&format!(
     "{}:{}",
     config.host.unwrap(),
