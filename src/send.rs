@@ -8,7 +8,7 @@ use std::{
   thread,
 };
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use bufstream::BufStream;
 use mime_guess;
 use tar::Builder;
@@ -219,18 +219,12 @@ impl Send {
     let default_cmd;
     if is_archive {
       default_cmd = format!("curl http://{}/{} | tar xvf -", pub_addr, key);
-      print!(
-        "\x1B]52;c;{}\x07",
-        general_purpose::STANDARD.encode(&default_cmd)
-      );
+      print!("\x1B]52;c;{}\x07", general_purpose::STANDARD.encode(&default_cmd));
       println!("cURL: {}", default_cmd);
       println!("Wget: wget -O- http://{}/{} | tar xvf -", pub_addr, key);
     } else {
       default_cmd = format!("curl -o \"{}\" http://{}/{}", file_name, pub_addr, key);
-      print!(
-        "\x1B]52;c;{}\x07",
-        general_purpose::STANDARD.encode(&default_cmd)
-      );
+      print!("\x1B]52;c;{}\x07", general_purpose::STANDARD.encode(&default_cmd));
       println!("cURL: {}", default_cmd);
       println!("Wget: wget -O \"{}\" http://{}/{}", file_name, pub_addr, key);
     }

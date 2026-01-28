@@ -1,83 +1,197 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Net Copy</title>
 
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Net Copy</title>
+    <link rel="icon" href="data:," />
 
-  <link rel="icon" href="data:,">
+    <style>
+      table,
+      th,
+      td {
+        border: 1px solid black;
+      }
+    </style>
+  </head>
 
-  <style>
-    table,
-    th,
-    td {
-      border: 1px solid black;
-    }
-  </style>
-</head>
+  <body>
+    <input type="file" id="files" multiple />
+    <button id="upload">Upload</button>
 
-<body>
-  <input type="file" id="files" multiple>
-  <button id="upload">Upload</button>
+    <br />
+    <br />
 
-  <br>
-  <br>
+    <table style="width: 100%">
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Size</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="table-content"></tbody>
+    </table>
 
-  <table style="width: 100%;">
-    <thead>
-      <tr>
-        <th>File</th>
-        <th>Size</th>
-        <th>Status</th>
-      </tr>
-    </thead>
-    <tbody id="table-content">
-    </tbody>
-  </table>
+    <script>
+      window.onload = () => {
+        /** @type {HTMLInputElement} */
+        const input = document.getElementById("files");
+        const tableContent = document.getElementById("table-content");
+        const upload = document.getElementById("upload");
+        /** @type {Map<string, File>} */
+        let files = new Map();
 
-  <script>
-    window.onload = () => {
-      /** @type {HTMLInputElement} */
-      const input = document.getElementById('files');
-      const tableContent = document.getElementById('table-content');
-      const upload = document.getElementById('upload');
-      /** @type {File[]} */
-      let files = [];
-
-      input.addEventListener('change', function (ev) {
-        files = Array.from(this.files);
-        tableContent.innerHTML = files.map((file) => `<tr>
-              <td>${file.name}</td>
-              <td>${file.size}</td>
-              <td id="${file.name}">Ready</td>
-            </tr>`).join('\n');
-      });
-
-
-      upload.addEventListener('click', async function () {
-        for (let file of files) {
-          let statusElement = document.getElementById(file.name);
-          if (statusElement.innerText !== 'Ready') {
-            alert(`${file.name} is not ready for upload, skipped`);
-            continue;
+        input.addEventListener("change", function (ev) {
+          if (!this.files) {
+            return;
           }
-          statusElement.innerText = 'Uploading';
-          let response = await fetch(location.href, {
-            method: 'POST',
-            headers: { 'File-Path': file.name },
-            body: file
-          });
-          if (response.status === 200) {
-            statusElement.innerText = 'Done';
-          } else {
-            statusElement.innerText = 'Error';
+          let added = [];
+          for (let i = 0; i < this.files.length; i++) {
+            let file = this.files.item(i);
+            if (files.has(file.name)) {
+              if (file.size == files.get(file.name).size) {
+                showToast(
+                  `"${file.name}" is already in the below list, skipped`,
+                );
+                continue;
+              } else {
+                let index = file.name.lastIndexOf(".");
+                let stem = file.name;
+                let ext = "";
+                if (index >= 0) {
+                  stem = file.name.substring(0, index);
+                  ext = file.name.substring(index);
+                }
+                let fileName = "";
+                while (fileName.length == 0 || files.has(fileName)) {
+                  fileName =
+                    stem +
+                    "_" +
+                    Math.random().toString(36).substring(2, 8) +
+                    ext;
+                }
+                showToast(
+                  `"${file.name}" is already in the below list, rename to "${fileName}"`,
+                );
+                files.set(fileName, file);
+                added.push([fileName, file]);
+              }
+            } else {
+              files.set(file.name, file);
+              added.push([file.name, file]);
+            }
           }
-        }
-      });
-    }
-  </script>
-</body>
+          tableContent.innerHTML += added
+            .map((item) => {
+              const [name, file] = item;
+              let fileSizeStr = `${file.size} B`;
+              if (file.size > 1024 * 1024 * 1024) {
+                fileSizeStr = `${(file.size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+              } else if (file.size > 1024 * 1024) {
+                fileSizeStr = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+              } else if (file.size > 1024) {
+                fileSizeStr = `${(file.size / 1024).toFixed(0)} KB`;
+              }
+              return `<tr>
+              <td>${name}</td>
+              <td>${fileSizeStr}</td>
+              <td id="${name}">Ready</td>
+            </tr>`;
+            })
+            .join("\n");
 
+          this.value = "";
+        });
+
+        upload.addEventListener("click", async function () {
+          for (let [fileName, file] of files) {
+            let statusElement = document.getElementById(fileName);
+            if (statusElement.innerText !== "Ready") {
+              showToast(`${fileName} is not ready for upload, skipped`);
+              continue;
+            }
+
+            const xhr = new XMLHttpRequest();
+            const success = await new Promise((resolve) => {
+              xhr.upload.addEventListener("progress", (event) => {
+                if (event.lengthComputable) {
+                  statusElement.innerText = `Uploading (${((event.loaded * 100) / event.total).toFixed(2)} %)`;
+                }
+              });
+              xhr.addEventListener("progress", (event) => {
+                if (event.lengthComputable) {
+                  statusElement.innerText = `Uploading (${((event.loaded * 100) / event.total).toFixed(2)} %)`;
+                }
+              });
+              xhr.addEventListener("loadend", () => {
+                resolve(xhr.readyState === 4 && xhr.status === 200);
+              });
+
+              xhr.open("POST", location.href);
+              xhr.setRequestHeader("File-Path", fileName);
+              xhr.send(file);
+            });
+
+            if (success) {
+              statusElement.innerText = "Done";
+            } else {
+              statusElement.innerText = "Error";
+            }
+          }
+        });
+      };
+
+      function showToast(content) {
+        const container = document.getElementById("toast-container");
+        const toast = document.createElement("div");
+        toast.classList.add("toast");
+        toast.textContent = content;
+
+        container.appendChild(toast);
+
+        setTimeout(() => {
+          toast.classList.add("show");
+        }, 10);
+
+        setTimeout(() => {
+          toast.classList.remove("show");
+          setTimeout(() => {
+            container.removeChild(toast);
+          }, 500);
+        }, 3000);
+      }
+    </script>
+
+    <div id="toast-container"></div>
+
+    <style>
+      #toast-container {
+        position: fixed;
+        top: 5px;
+        left: 30vw;
+        z-index: 1000;
+      }
+
+      .toast {
+        background-color: #333;
+        color: white;
+        padding: 10px 20px;
+        margin-bottom: 10px;
+        border-radius: 5px;
+        opacity: 0;
+        transition:
+          opacity 0.5s ease-out,
+          transform 0.5s ease-out;
+        transform: translateY(20px);
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    </style>
+  </body>
 </html>

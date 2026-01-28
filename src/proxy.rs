@@ -4,7 +4,7 @@ use std::{
   iter,
   net::{IpAddr, SocketAddr, TcpListener, TcpStream},
   str::FromStr,
-  sync::mpsc::{channel, Receiver, Sender},
+  sync::mpsc::{Receiver, Sender, channel},
   thread,
   time::Duration,
 };

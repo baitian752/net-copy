@@ -38,7 +38,11 @@ pub struct Cli {
   #[clap(short = 'm', long, value_enum)]
   pub mode: Option<Mode>,
 
-   /// Auto rename file if exist
-   #[clap(short = 'a', long, value_parser)]
-   pub auto_rename: bool,
+  /// Auto rename file if exist
+  #[clap(short = 'a', long, value_parser)]
+  pub auto_rename: bool,
+
+  /// Whether show save config prompt
+  #[clap(short = 's', long, value_parser)]
+  pub prompt_save_config: bool,
 }

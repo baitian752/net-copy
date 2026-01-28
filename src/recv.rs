@@ -9,7 +9,7 @@ use std::{
   thread,
 };
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use bufstream::BufStream;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 
@@ -184,6 +184,14 @@ impl Recv {
     );
 
     let mut buf = [0u8; 16 * 1024];
+    if let Some(folder) = file_path.parent() {
+      if !folder.exists() {
+        if let Err(e) = fs::create_dir_all(folder) {
+          println!("Failed to create folder: {}", e);
+          return;
+        }
+      }
+    }
     let mut file_writer = match File::create(&file_path) {
       Ok(file) => BufWriter::new(file),
       Err(e) => {

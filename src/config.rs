@@ -1,6 +1,6 @@
 use std::{
   env,
-  fs::{create_dir_all, File},
+  fs::{File, create_dir_all},
   io::{Read, Write},
   net::IpAddr,
   path::PathBuf,
@@ -28,6 +28,7 @@ pub struct Config {
   pub no_proxy: bool,
   pub mode: Option<Mode>,
   pub auto_rename: bool,
+  pub prompt_save_config: bool,
 }
 
 impl Config {
@@ -95,6 +96,10 @@ impl Config {
         Ok(x) => FromStr::from_str(&x).unwrap(),
         Err(_) => false,
       },
+      prompt_save_config: match env::var("NCP_PROMPT_SAVE_CONFIG") {
+        Ok(x) => FromStr::from_str(&x).unwrap(),
+        Err(_) => false,
+      },
     }
   }
 
@@ -108,6 +113,7 @@ impl Config {
       no_proxy: cli.no_proxy,
       mode: cli.mode.clone(),
       auto_rename: cli.auto_rename,
+      prompt_save_config: cli.prompt_save_config,
     }
   }
 
@@ -135,6 +141,9 @@ impl Config {
     }
     if !self.auto_rename {
       self.auto_rename = config.auto_rename;
+    }
+    if !self.prompt_save_config {
+      self.prompt_save_config = config.prompt_save_config;
     }
     self
   }

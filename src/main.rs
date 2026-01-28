@@ -1,6 +1,6 @@
 use std::{
-  net::{IpAddr, SocketAddr},
-  str::FromStr,
+  io::{self, Write},
+  net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
 use clap::Parser;
@@ -18,65 +18,75 @@ use net_copy::{
 fn main() {
   let cli = Cli::parse();
 
-  let mut prompt_save_config = true;
   let mut config = Config::new(&cli);
-  if config.host.is_none() {
-    let interfaces = default_net::get_interfaces();
-    let interfaces: Vec<_> = interfaces
-      .iter()
-      .filter(|interface| {
-        if interface.ipv4.len() == 1 {
-          let addr = interface.ipv4[0].addr;
-          if addr.is_loopback() || addr.is_unspecified() {
-            false
-          } else {
-            true
-          }
-        } else {
-          false
+
+  let mut ip_list: Vec<IpAddr> = vec![];
+  let interfaces = default_net::get_interfaces();
+  for interface in &interfaces {
+    if interface.ipv4.len() > 0 {
+      for net in &interface.ipv4 {
+        if net.addr.is_loopback() || net.addr.is_broadcast() {
+          continue;
         }
-      })
-      .collect();
-    let ip_addr = if interfaces.is_empty() {
-      println!("Cannot find any valid network interface");
-      return;
-    } else if interfaces.len() == 1 {
-      prompt_save_config = false;
-      interfaces[0].ipv4[0].addr
-    } else {
-      for (i, interface) in interfaces.iter().enumerate() {
-        println!("{i}: <{}> {}", interface.name, interface.ipv4[0].addr);
+        ip_list.push(IpAddr::V4(net.addr));
+        println!(
+          "{}: <{}> {}",
+          ip_list.len(),
+          interface.friendly_name.as_ref().unwrap_or(&interface.name),
+          net.addr
+        );
       }
-      println!(
-        "{} net interfaces have been found, please choose one:",
-        interfaces.len()
-      );
-      let mut input = String::new();
-      let ip_index = match std::io::stdin().read_line(&mut input) {
-        Ok(_) => match input.trim().parse::<usize>() {
-          Ok(value) => value,
-          Err(e) => {
-            println!("Parse input as integer failed: {}", e);
-            return;
-          }
-        },
-        Err(e) => {
-          println!("Read line failed: {}", e);
-          return;
-        }
-      };
-      let ip_addr = match interfaces.get(ip_index) {
-        Some(item) => item.ipv4[0].addr,
-        None => {
-          println!("IP index out of range");
-          return;
-        }
-      };
-      ip_addr
-    };
-    config.host = Some(IpAddr::V4(ip_addr));
+    }
   }
-  if prompt_save_config {
+  for interface in &interfaces {
+    if interface.ipv6.len() > 0 {
+      for net in &interface.ipv6 {
+        if net.addr.is_loopback() {
+          continue;
+        }
+        ip_list.push(IpAddr::V6(net.addr));
+        println!(
+          "{}: <{}> [{}]",
+          ip_list.len(),
+          interface.friendly_name.as_ref().unwrap_or(&interface.name),
+          net.addr
+        );
+      }
+    }
+  }
+
+  if ip_list.is_empty() {
+    println!("Cannot find any valid network interface");
+    return;
+  }
+
+  print!("Please choose one in 1..{}: ", ip_list.len());
+  io::stdout().flush().unwrap();
+  let mut input = String::new();
+  let ip_index = match std::io::stdin().read_line(&mut input) {
+    Ok(_) => match input.trim().parse::<usize>() {
+      Ok(value) => {
+        if value < 1 || value > ip_list.len() {
+          println!("Index range is 1..{}", ip_list.len());
+          return;
+        } else {
+          value - 1
+        }
+      }
+      Err(e) => {
+        println!("Parse input as integer failed: {}", e);
+        return;
+      }
+    },
+    Err(e) => {
+      println!("Read line failed: {}", e);
+      return;
+    }
+  };
+
+  config.host = Some(ip_list[ip_index]);
+
+  if config.prompt_save_config {
     config.save();
   }
 
@@ -84,19 +94,16 @@ fn main() {
   let key = config
     .key
     .unwrap_or_else(|| Alphanumeric.sample_string(&mut rand::rng(), 6));
-  let socket = SocketAddr::from_str(&format!(
-    "{}:{}",
-    config.host.unwrap(),
-    config.port.unwrap_or_else(|| {
-      match pick_unused_port() {
-        Some(port) => port,
-        None => {
-          panic!("Pick unused port failed");
-        }
-      }
-    })
-  ))
-  .unwrap();
+  let port = config.port.unwrap_or_else(|| match pick_unused_port() {
+    Some(port) => port,
+    None => {
+      panic!("Pick unused port failed");
+    }
+  });
+  let socket: SocketAddr = match config.host.unwrap() {
+    IpAddr::V4(addr) => SocketAddr::V4(SocketAddrV4::new(addr, port)),
+    IpAddr::V6(addr) => SocketAddr::V6(SocketAddrV6::new(addr, port, 0, 0)),
+  };
   let reserve = config.reserve;
   let proxy_servers = config.proxy.unwrap_or_default();
   let proxy = if config.no_proxy {
