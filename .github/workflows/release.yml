@@ -96,7 +96,7 @@ jobs:
           - { os: macOS-latest, target: aarch64-apple-darwin, cross: true }
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -107,18 +107,13 @@ jobs:
           toolchain: stable
           target: ${{ matrix.info.target }}
 
-      - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.info.target }}
-
       - name: Build
-        uses: ClementTsang/cargo-action@v0.0.2
+        uses: ClementTsang/cargo-action@v0.0.7
         with:
           command: build
           args: --release --verbose --locked --target=${{ matrix.info.target }}
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          cross-version: 0.2.5
 
       - name: Bundle release
         shell: bash
@@ -131,11 +126,12 @@ jobs:
         run: |
           mkdir release
           mv ${{ env.ASSET }} release/
+
       - name: Save release as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           retention-days: 3
-          name: release
+          name: "release-${{ matrix.info.target }}"
           path: release
 
   upload-release:
@@ -144,17 +140,18 @@ jobs:
     needs: [build-binaries]
     steps:
       - name: Get release artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
         with:
-          name: release
           path: release
+          merge-multiple: true
 
       - name: Print out all release files
         run: |
           echo "Generated $(ls ./release | wc -l) files:"
           du -h -d 0 ./release/*
+
       - name: Upload all saved release files if not mock
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           draft: false
           fail_on_unmatched_files: true
